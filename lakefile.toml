@@ -1,0 +1,25 @@
+    name = "LeanHttpx"
+    version = "0.1.0"
+    defaultTargets = ["LeanHttpx", "props", "conformance"]
+
+    # The verified library. Everything under LeanHttpx/ except Transport.lean is a
+    # total function and the proof surface; see CONTRIBUTING.md.
+    [[lean_lib]]
+    name = "LeanHttpx"
+
+    # Property tests for what is tested rather than proved. No dependencies, runs
+    # in well under a second: `lake exe props [seed]`.
+    [[lean_exe]]
+    name = "props"
+    root = "tests.Props"
+
+    # Conformance cases re-expressed from the upstream test suite:
+    # `lake exe conformance`. Each case names the upstream test it mirrors.
+    [[lean_exe]]
+    name = "conformance"
+    root = "tests.Conformance"
+
+[[require]]
+name = "LeanJson"
+git = "https://github.com/NitheeshWorks/lean-json"
+rev = "main"

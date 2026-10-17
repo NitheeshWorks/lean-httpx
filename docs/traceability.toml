@@ -1,0 +1,26 @@
+# Traceability register: upstream behaviour -> Lean symbol -> theorem -> test.
+#
+# `scripts/traceability-check.py` validates it on every CI run: every
+# `realises`/`theorem` symbol must resolve, every `test` path must exist.
+#
+# status: implemented | partial | tested | excluded | deviation
+#   implemented  realised and proved
+#   partial      realised, proof incomplete or covering a subset
+#   tested       realised, deliberately tested rather than proved (say why)
+#   excluded     out of scope, rejected by name
+#   deviation    behaviour differs from upstream on purpose (say how)
+
+[meta]
+upstream_name = "httpx and httpcore"
+upstream_url = "https://github.com/encode/httpx"
+upstream_commit = "b5addb64f0161ff6bfe94c124ef76f6a1fba5254"
+upstream_license = "BSD-3-Clause"
+
+# [[requirement]]
+# id = "..."                  # stable id, e.g. "routing.first-match"
+# upstream = "tests/test_x.py::test_y"   # or a docs section
+# title = "..."
+# status = "implemented"
+# realises = ["LeanHttpx.Foo.bar"]
+# theorem = ["LeanHttpx.Foo.bar_spec"]
+# test = ["tests/Conformance.lean::name"]

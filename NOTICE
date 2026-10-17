@@ -1,0 +1,9 @@
+lean-httpx is a clean-room reimplementation in Lean 4 of httpx and httpcore
+(https://github.com/encode/httpx), which is licensed under BSD-3-Clause and remains the copyright of
+its authors.
+
+No source code from the upstream project is copied here. Its test suite and
+documentation are used as the behavioural specification, and each
+conformance case in tests/Conformance.lean names the upstream test it
+re-expresses. docs/traceability.toml records the upstream commit this port
+was read against.
