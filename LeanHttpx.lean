@@ -3,6 +3,7 @@ import LeanHttpx.RepoImpl
 import LeanHttpx.Specifications
 import LeanHttpx.Proofs
 import LeanHttpx.APIs
+import LeanHttpx.Transport
 import LeanHttpx.Proofs.Verified
 
 /-!

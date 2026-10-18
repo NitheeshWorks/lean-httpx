@@ -102,6 +102,8 @@ inductive HTTPError where
   | writeError (message : String)
   | connectTimeout (message : String)
   | readTimeout (message : String)
+  | writeTimeout (message : String)
+  | poolTimeout (message : String)
   | unsupportedProtocol (message : String)
   | decodingError (message : String)
   | cookieConflict (message : String)
@@ -123,6 +125,8 @@ def name : HTTPError → String
   | .writeError .. => "WriteError"
   | .connectTimeout .. => "ConnectTimeout"
   | .readTimeout .. => "ReadTimeout"
+  | .writeTimeout .. => "WriteTimeout"
+  | .poolTimeout .. => "PoolTimeout"
   | .unsupportedProtocol .. => "UnsupportedProtocol"
   | .decodingError .. => "DecodingError"
   | .cookieConflict .. => "CookieConflict"
@@ -133,7 +137,7 @@ def name : HTTPError → String
 def message : HTTPError → String
   | .invalidURL m | .httpStatusError m _ _ | .tooManyRedirects m _ | .remoteProtocolError m
   | .localProtocolError m | .connectError m | .readError m | .writeError m | .connectTimeout m
-  | .readTimeout m | .unsupportedProtocol m | .decodingError m | .cookieConflict m
+  | .readTimeout m | .writeTimeout m | .poolTimeout m | .unsupportedProtocol m | .decodingError m | .cookieConflict m
   | .streamError m | .appError m => m
 
 instance : ToString HTTPError := ⟨fun e => s!"{e.name}: {e.message}"⟩
@@ -141,6 +145,7 @@ instance : ToString HTTPError := ⟨fun e => s!"{e.name}: {e.message}"⟩
 /-- `HTTPError` is the base of the transport and status errors. -/
 def isTransportError : HTTPError → Bool
   | .connectError .. | .readError .. | .writeError .. | .connectTimeout .. | .readTimeout ..
+  | .writeTimeout .. | .poolTimeout ..
   | .unsupportedProtocol .. | .remoteProtocolError .. | .localProtocolError .. => true
   | _ => false
 

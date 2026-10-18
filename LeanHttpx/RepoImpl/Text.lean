@@ -78,6 +78,13 @@ def utf8DecodeReplace (bs : ByteArray) : String :=
   | some s => s
   | none => utf8DecodeGo bs 0 ""
 
+/-- Header bytes as text: UTF-8 when valid, otherwise ISO-8859-1 (httpx's
+`Headers.encoding` falls back the same way). -/
+def decodeHeader (b : ByteArray) : String :=
+  match String.fromUTF8? b with
+  | some s => s
+  | none => b.foldl (fun s x => s.push (Char.ofNat x.toNat)) ""
+
 /-- Python's `repr` of a single character. -/
 def charRepr (c : Char) : String :=
   let n := c.toNat
