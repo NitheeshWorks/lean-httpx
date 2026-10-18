@@ -109,11 +109,20 @@ hcase("rfc7541 c3 requests", c3, huffman=False)
 hcase("rfc7541 c4 requests huffman", c3)
 hcase("rfc7541 c5 responses table 256", c5, size=256, huffman=False)
 hcase("rfc7541 c6 responses huffman table 256", c5, size=256)
-hcase("sensitive", [[(b":method", b"GET"), (b"authorization", b"secret", True), (b"x-a", b"1")],
-                    [(b"authorization", b"secret", True), (b"x-a", b"1")]], huffman=False)
-hcase("eviction table 64", [[(b"x-long-name", b"v" * 20), (b"x-b", b"2")], [(b"x-long-name", b"v" * 20), (b"x-b", b"2")]], size=64, huffman=False)
-hcase("utf8 and empty value", [[(b"x-empty", b""), ("x-utf8".encode(), "café".encode()), (b"x-bin", bytes(range(256)))]])
-hcase("table size 0", [[(b"x-a", b"1"), (b"x-a", b"1")]], size=0, huffman=False)
+for huff in (False, True):
+    sfx = " huffman" if huff else ""
+    hcase("sensitive" + sfx, [[(b":method", b"GET"), (b"authorization", b"secret", True), (b"x-a", b"1")],
+                              [(b"authorization", b"secret", True), (b"x-a", b"1")]], huffman=huff)
+    hcase("eviction table 64" + sfx, [[(b"x-long-name", b"v" * 20), (b"x-b", b"2")], [(b"x-long-name", b"v" * 20), (b"x-b", b"2")]], size=64, huffman=huff)
+    hcase("table size 0" + sfx, [[(b"x-a", b"1"), (b"x-a", b"1")]], size=0, huffman=huff)
+hcase("utf8 and empty value", [[(b"x-empty", b""), ("x-utf8".encode(), "caf\u00e9".encode()), (b"x-bin", bytes(range(256)))]])
+# An httpx request as it goes out on HTTP/2 (httpcore's fields, h2's
+# normalisation): Huffman literals longer than raw ones included.
+hcase("httpx request", [[(b":method", b"GET"), (b":authority", b"example.com"), (b":scheme", b"http"), (b":path", b"/"),
+    (b"accept", b"*/*"), (b"accept-encoding", b"gzip, deflate"), (b"user-agent", b"python-httpx/0.28.1"),
+    (b"cookie", b"a=1", True), (b"x-symbols", b"{}<>\\^`|~")],
+    [(b":method", b"POST"), (b":authority", b"example.com"), (b":scheme", b"http"), (b":path", b"/submit?q=1"),
+    (b"content-length", b"2"), (b"content-type", b"application/json")]])
 
 def badhpack(name, block, maxlist=65536, maxtable=None):
     dec = Decoder(max_header_list_size=maxlist)

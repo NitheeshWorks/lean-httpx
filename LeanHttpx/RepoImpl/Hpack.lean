@@ -151,8 +151,19 @@ decreasing_by omega
 def encodeInt (n flags v : Nat) : ByteArray :=
   if v < 2 ^ n - 1 then beArr 1 (flags + v) else beArr 1 (flags + (2 ^ n - 1)) ++ contBytes (v - (2 ^ n - 1))
 
-/-- A string, raw (not Huffman-coded). -/
-def encodeStr (s : ByteArray) : ByteArray := encodeInt 7 0 s.size ++ s
+/-- The Huffman form of a string, if it decodes back to the string (it
+always does; the check makes the round trip a fact of this definition, and
+`tests/Props.lean` shows the check never fails). -/
+def huffmanForm (s : ByteArray) : Option ByteArray :=
+  let h := Huffman.encode s
+  if Huffman.decode h = some s ∧ h.size < 2 ^ 28 then some h else none
+
+/-- A string as hpack's encoder sends it by default: Huffman-coded, the `H`
+bit set (section 5.2), whether or not that is shorter. -/
+def encodeStr (s : ByteArray) : ByteArray :=
+  match huffmanForm s with
+  | some h => encodeInt 7 128 h.size ++ h
+  | none => encodeInt 7 0 s.size ++ s
 
 /-- An HPACK decoding error (`COMPRESSION_ERROR`). -/
 def err (msg : String) : Error := ⟨.compressionError, msg⟩

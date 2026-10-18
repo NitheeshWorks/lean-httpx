@@ -10,6 +10,7 @@ import LeanHttpx.RepoImpl.H1Body
 import LeanHttpx.RepoImpl.H1Stream
 import LeanHttpx.RepoImpl.H2Conn
 import LeanHttpx.RepoImpl.H2Frame
+import LeanHttpx.RepoImpl.H2Request
 import LeanHttpx.RepoImpl.Hash
 import LeanHttpx.RepoImpl.Headers
 import LeanHttpx.RepoImpl.Hpack

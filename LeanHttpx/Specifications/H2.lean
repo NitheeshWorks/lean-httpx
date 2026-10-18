@@ -1,5 +1,6 @@
 import LeanHttpx.RepoImpl.H2Frame
 import LeanHttpx.RepoImpl.Hpack
+import LeanHttpx.RepoImpl.H2Request
 
 /-!
 # Specifications: HTTP/2 frames and HPACK
@@ -49,5 +50,12 @@ def HpackDecodeEncodeSeq : Prop :=
   ∀ (e : Encoder) (d : Decoder) (ls : List (List HeaderField)), InStep e d →
     (∀ fs ∈ ls, FieldsFit fs ∧ listSize fs ≤ d.maxHeaderListSize) →
     d.decodeAll (e.encodeAll ls).1 = .ok (ls, { d with table := (e.encodeAll ls).2.table })
+
+/-- What a server decodes from the block of a request has no
+connection-specific field (RFC 9113 section 8.2.2). -/
+def RequestFieldsClean : Prop :=
+  ∀ (r : Request) (e : Encoder) (d : Decoder) (fs : List HeaderField) (d' : Decoder),
+    InStep e d → FieldsFit (requestFields r) → listSize (requestFields r) ≤ d.maxHeaderListSize →
+    d.decode (e.encode (requestFields r)).1 = .ok (fs, d') → ∀ f ∈ fs, connectionSpecific f = false
 
 end LeanHttpx.Spec

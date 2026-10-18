@@ -6,6 +6,7 @@ import LeanHttpx.Specifications.Client
 import LeanHttpx.Specifications.H2
 import LeanHttpx.Proofs.H2
 import LeanHttpx.Proofs.Hpack
+import LeanHttpx.Proofs.H2Request
 import LeanHttpx.Proofs.Headers
 import LeanHttpx.Proofs.Cookies
 import LeanHttpx.Proofs.Redirects
@@ -72,6 +73,8 @@ structure VerifiedH2 : Prop where
   hpackDecodeEncodeStatic : HpackDecodeEncodeStatic
   /-- `hpack_decode_encode_seq`: blocks in sequence, the table carried along. -/
   hpackDecodeEncodeSeq : HpackDecodeEncodeSeq
+  /-- `h2_request_fields_clean`: no connection-specific field in a request. -/
+  requestFieldsClean : RequestFieldsClean
 
 theorem theVerifiedURL : VerifiedURL where
   parsePrint u h := url_parse_print_ext u h
@@ -97,5 +100,7 @@ theorem theVerifiedH2 : VerifiedH2 where
   hpackDecodeEncode e d fs h hs hl := Hpack.hpack_decode_encode e d fs h.1 h.2.1 h.2.2.1 h.2.2.2 hs hl
   hpackDecodeEncodeStatic d fs hs hl := Hpack.hpack_decode_encode_static d fs hs hl
   hpackDecodeEncodeSeq e d ls h hls := Hpack.hpack_decode_encode_seq ls e d h.1 h.2.1 h.2.2.1 h.2.2.2 hls
+  requestFieldsClean r e d fs d' h hs hl hdec :=
+    H2.h2_request_fields_clean r e d h.1 h.2.1 h.2.2.1 h.2.2.2 hs hl fs d' hdec
 
 end LeanHttpx

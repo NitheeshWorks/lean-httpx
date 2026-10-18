@@ -63,7 +63,11 @@ def Peer.frame (p : Peer) : IO (Option Frame) := do
       | none => return none
   return none
 
-/-- The next request: its stream and path (skipping other frames). -/
+/-- The next request: its stream and path (skipping other frames). The
+request's fields are validated as h2 4.4.1's server does by default (RFC
+9113 sections 8.2.1 and 8.2.2): a connection-specific field, `te` other than
+`trailers`, an upper-case name or a value with surrounding whitespace ends
+the connection with `GOAWAY PROTOCOL_ERROR`. -/
 def Peer.request (p : Peer) : IO (Option (Nat × String)) := do
   for _ in [0:10000] do
     match ← p.frame with
@@ -72,6 +76,10 @@ def Peer.request (p : Peer) : IO (Option (Nat × String)) := do
       match (← p.dec.get).decode blk with
       | .ok (fs, d) =>
         p.dec.set d
+        if let some f := fs.find? (fun f => (Conn.badField f).isSome) then
+          sendFrames p.sock [.goaway 0 ErrorCode.protocolError.toNat
+            (u s!"{(Conn.badField f).getD ""}: {String.fromUTF8? f.name |>.getD ""}")]
+          return none
         let path := (fs.find? (·.name == u ":path")).map (fun f => (String.fromUTF8? f.value).getD "/")
         return some (sid, path.getD "/")
       | .error _ => return none
@@ -136,6 +144,16 @@ def behave (p : Peer) (sid : Nat) : String → IO Unit
   | "/goaway" => do
     sendFrames p.sock [.goaway 0 ErrorCode.noError.toNat .empty]; hold
   | "/silent" => hold
+  | "/fast" => sendFrames p.sock (ok sid "fast")
+  | "/stall" => do
+    sendFrames p.sock [.headers sid (headBlock 200) false true none none]; hold
+  | "/drip" => do
+    sendFrames p.sock [.headers sid (headBlock 200) false true none none]
+    for i in [0:15] do
+      IO.sleep 100
+      sendFrames p.sock [.data sid (u s!"{i % 10}") false none]
+    sendFrames p.sock [.data sid .empty true none]
+    hold
   | "/big-body" => do
     sendFrames p.sock [.headers sid (headBlock 200 [("content-length", toString (200 * mib))]) false true none none]
     let block := fill 120 16384
@@ -230,6 +248,90 @@ def multiplexed (port : Nat) : IO String := do
   c.close
   return ", ".intercalate out.toList
 
+/-- A request with the given fields sent by a bare `Conn`, bypassing
+`requestFields`: what the validating server does with it. -/
+def rawRequest (port : Nat) (extra : List (String × String)) : IO String := do
+  let sock ← TCP.Socket.Client.mk
+  (sock.connect (.v4 ⟨.ofParts 127 0 0 1, port.toUInt16⟩)).block
+  let fields : List HeaderField := ([(":method", "GET"), (":authority", "127.0.0.1"), (":scheme", "http"),
+    (":path", "/ok")] ++ extra).map fun (k, v) => ⟨u k, u v, false⟩
+  let .ok (c, sid) := (Conn.new).startRequest fields .empty | return "could not start"
+  let (out, c) := c.takeOutput
+  (sock.send out).block
+  let mut c := c
+  for _ in [0:100] do
+    match ← (sock.recv? 65536).block with
+    | some b =>
+      if b.isEmpty then break
+      c := c.receive b
+      if let some (_, code) := c.goaway then return s!"GOAWAY {errorName code}"
+      if let some o := c.outcome sid then
+        return match o with | .ok (st, _, _) => s!"{st}" | .error m => m
+    | none => break
+  return "closed"
+
+/-- The validating server: it refuses a request with `connection:
+keep-alive`; the client strips connection-specific fields, so its request
+with all of them passes. -/
+def validation (port : Nat) : IO Bool := do
+  let raw ← rawRequest port [("connection", "keep-alive")]
+  let c ← Client.new (http1 := false) (http2 := true)
+  let out ← try
+      let r ← c.get s!"http://127.0.0.1:{port}/ok" (headers := [("Connection", "close"), ("Keep-Alive", "300"),
+        ("Proxy-Connection", "keep-alive"), ("Upgrade", "websocket"), ("TE", "gzip"), ("X-Kept", "  yes ")])
+      pure s!"{r.statusCode} {String.fromUTF8? r.content |>.getD ""}"
+    catch e => pure (toString e)
+  c.close
+  let good := raw == "GOAWAY PROTOCOL_ERROR" && out == "200 hello"
+  IO.println s!"{if good then "ok  " else "FAIL"}  RFC 9113 8.2.2 validating server: bare connection field {raw}; client request with Connection, Keep-Alive, Proxy-Connection, Upgrade, TE: {out}"
+  return good
+
+/-- `n` requests at once from `n` tasks on one client, within `ms`. -/
+def concurrent (port : Nat) (n ms : Nat) : IO Bool := do
+  let c ← Client.new (http1 := false) (http2 := true)
+    (timeout := { connect := some 2.0, read := some 2.0, write := some 2.0, pool := some 2.0 })
+  let t0 ← IO.monoMsNow
+  let tasks ← (List.range n).mapM fun _ => IO.asTask (c.get s!"http://127.0.0.1:{port}/fast")
+  let mut okN := 0
+  let mut errs : Array String := #[]
+  for t in tasks do
+    match ← IO.wait t with
+    | .ok r => if r.statusCode == 200 && r.content == u "fast" then okN := okN + 1
+    | .error e => errs := errs.push (toString e)
+  let dt := (← IO.monoMsNow) - t0
+  c.close
+  let good := okN == n && dt ≤ ms
+  IO.println s!"{if good then "ok  " else "FAIL"}  {n} concurrent requests on one client: {okN} ok in {dt} ms (bound {ms} ms){if errs.isEmpty then "" else s!", e.g. {errs[0]!}"}"
+  return good
+
+/-- A stalled stream next to a busy one on the same connection: the
+stalled one raises `ReadTimeout` after its read timeout, the busy one
+(a byte every 100 ms) completes. -/
+def stalled (port : Nat) : IO Bool := do
+  let c ← Client.new (http1 := false) (http2 := true)
+    (timeout := { connect := some 2.0, read := some 0.5, write := some 2.0, pool := some 2.0 })
+  let t0 ← IO.monoMsNow
+  let busy ← IO.asTask (c.get s!"http://127.0.0.1:{port}/drip")
+  let stall ← IO.asTask do
+    let r ← try (do let _ ← c.get s!"http://127.0.0.1:{port}/stall"; pure "no timeout") catch e => pure (toString e)
+    pure (r, (← IO.monoMsNow) - t0)
+  let (s, sdt) ← match ← IO.wait stall with
+    | .ok v => pure v
+    | .error e => pure (toString e, 0)
+  let b ← match ← IO.wait busy with
+    | .ok r => pure s!"{r.statusCode} {String.fromUTF8? r.content |>.getD ""}"
+    | .error e => pure (toString e)
+  c.close
+  let good := s == "ReadTimeout: timed out" && 450 ≤ sdt && sdt ≤ 1200 && b == "200 012345678901234"
+  IO.println s!"{if good then "ok  " else "FAIL"}  stalled multiplexed stream: {s} after {sdt} ms (read timeout 500 ms); busy stream: {b}"
+  return good
+
+/-- The checks run under one and two Lean threads (`scripts/bench.sh`). -/
+def concurrency (port : Nat) : IO Bool := do
+  let a ← concurrent port 64 2000
+  let b ← stalled port
+  return a && b
+
 def runCases (port : Nat) : IO Bool := do
   let mut allOk := true
   for c in cases do
@@ -247,6 +349,8 @@ def runCases (port : Nat) : IO Bool := do
   let good := parts.length == 3 && parts.all (fun s => s.startsWith "200 part-" && s.endsWith "HTTP/2") && dt ≤ 1000
   allOk := allOk && good
   IO.println s!"{if good then "ok  " else "FAIL"}  multiplexed  {dt} ms  {m}"
+  allOk := (← validation port) && allOk
+  allOk := (← concurrency port) && allOk
   let kb ← peakKB
   let good := kb ≤ 300 * 1024
   allOk := allOk && good
@@ -276,6 +380,7 @@ def main (args : List String) : IO UInt32 := do
     IO.Process.exit 0
   let good ← match args with
     | ["bench"] => bench port
+    | ["concurrency"] => concurrency port
     | _ => runCases port
   IO.println (if good then "all clean" else "FAILED")
   (← IO.getStdout).flush

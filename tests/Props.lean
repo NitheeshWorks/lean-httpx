@@ -241,22 +241,30 @@ def properties : List Property := [
     let ok := c.inbuf.size ≤ 9 + c.limits.maxFrameSize && c.out.size ≤ c.limits.maxPendingOutput + 9 + 16384
       && c.streams.length ≤ 1
     (if ok then none else some s!"{b.toList}", r)⟩,
-  ⟨"HTTP/2: request fields are pseudo-headers then lower-case fields, credentials never indexed", fun r =>
-    let (k, r) := r.string "aAbB-".toList 5
-    let (v, r) := r.string "xy".toList 4
-    let hs : List (String × String) := [("Host", "example.org"), ("Authorization", "Basic x"), ("X-" ++ k, v),
-      ("Transfer-Encoding", "chunked")]
+  ⟨"HTTP/2: request fields as h2 sends them: pseudo-headers, lower case, stripped, no connection-specific field", fun r =>
+    let pick (r : Rng) (xs : List String) : String × Rng := let (i, r) := r.nat xs.length; (xs.getD i "", r)
+    let (k, r) := pick r ["Connection", "Keep-Alive", "Proxy-Connection", "Transfer-Encoding", "Upgrade", "TE", "te",
+      "Cookie", "Authorization", "X-Other", " X-Pad "]
+    let (v, r) := pick r ["keep-alive", "trailers", "Trailers", "gzip", " spaced ", "a=1", "a-cookie-of-twenty-bytes!"]
+    let hs : List (String × String) := [("Host", "example.org"), (k, v), ("Accept", "*/*")]
     match URL.parse "http://example.com/p?q=1" >>= fun u => Request.new "GET" u (headers := hs) with
     | .error _ => (some "request", r)
     | .ok req =>
-      let fs := h2Fields req
+      let fs := H2.requestFields req
       let names := fs.map fun f => String.fromUTF8! f.name
+      let kl := (asciiLower k).trimAscii.toString
+      let dropped := ["connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade"].contains kl
+        || (kl == "te" && asciiLower v != "trailers")
       let ok := names.take 4 == [":method", ":authority", ":scheme", ":path"]
         && (fs.getD 1 default).value == "example.org".toUTF8
-        && (fs.drop 4).all (fun f => (String.fromUTF8! f.name) == asciiLower (String.fromUTF8! f.name))
-        && !names.contains "host" && !names.contains "transfer-encoding"
-        && fs.all (fun f => f.sensitive == (f.name == "authorization".toUTF8))
-      (if ok then none else some s!"{names}", r)⟩,
+        && !names.contains "host"
+        && fs.all (fun f => !H2.connectionSpecific f && f.name == H2.lowerBytes f.name && f.value == H2.stripWs f.value)
+        && names.contains kl == !dropped
+        && fs.all (fun f => f.sensitive == (f.name == "authorization".toUTF8 || (f.name == "cookie".toUTF8 && f.value.size < 20)))
+      (if ok then none else some s!"{k}: {v} -> {names}", r)⟩,
+  ⟨"HPACK: the Huffman form of any string decodes back (encodeStr never falls back to raw)", fun r =>
+    let (b, r) := r.bytes 300
+    (if (Hpack.huffmanForm b).isSome then none else some s!"{b.toList}", r)⟩,
   ⟨"URL.parse never reaches its internal canonical-form check", fun r =>
     let (s, r) := r.urlString
     match URL.parse s with

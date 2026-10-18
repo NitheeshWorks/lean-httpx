@@ -20,6 +20,21 @@ to bytes:
 | `Transport.lean` | `HTTPTransport`, network I/O for HTTP/1.1 | no; tested |
 | `Transport2.lean` | `HTTP2Transport`, network I/O for HTTP/2: a pool of multiplexed connections | no; tested |
 
+**HTTP/2 concurrency.** Many tasks share one HTTP/2 connection, and no
+lock is held across a socket operation or a wait: a `Std.Mutex` holds the
+connection state only while it is updated. One reader per connection, on
+its own thread, does every read while a stream is open (and stops when none
+is, so an idle client holds no thread); a task waiting for its response or
+for a free stream leaves an `IO.Promise` and waits on it with its timeout,
+and the reader resolves the promises after every change; whoever has
+output writes it and any that arrives meanwhile. A blocking lock held
+across a read parks the runtime's worker threads, which the socket and
+timer continuations need: that deadlocked six concurrent requests at the
+default four threads. `tests/NativeH2.lean` runs 64 concurrent requests on
+one client and a stalled stream beside a busy one, under one and two Lean
+threads (`scripts/bench.sh`). The read timeout is per stream, counted from
+that stream's last progress; a stream that times out is reset.
+
 Module map: `RepoImpl/URL.lean` (parser and printer), `URLOps.lean` (properties,
 `copyWith`, `join`), `Headers.lean` (`Headers`, `QueryParams`), `Cookies.lean`
 (the `http.cookiejar` default policy), `Models.lean` (`Request.new`, `Response.new`
@@ -31,7 +46,8 @@ response codec), `H1Stream.lean` (where a response ends on a stream: the
 head's blank line, the last chunk, and h11's limits), `Codec.lean` (three combinators added to `Keel.Codec`: `guard`,
 `fail`, `bytesN`), `Decoders.lean` (inflate, gzip, zlib), `Base64.lean`, `Hash.lean`,
 `Text.lean`. HTTP/2: `DataTypes/H2.lean` (frames, error codes, settings),
-`RepoImpl/Bytes.lean` (big-endian readers and their lemmas), `H2Frame.lean`
+`RepoImpl/Bytes.lean` (big-endian readers and their lemmas), `H2Request.lean`
+(a request's fields as h2 sends them), `H2Frame.lean`
 (the frame codec), `Huffman.lean` (the RFC 7541 code, canonical from its
 code lengths), `Hpack.lean` (integers, strings, tables, the encoder and
 decoder), `H2Conn.lean` (the sans-I/O client connection: streams, flow
@@ -130,8 +146,10 @@ Listed here with the reason, and in `docs/traceability.toml` with
   against a hostile local server and a benchmark, `tests/Native.lean`.
 * **The Huffman code** (`Huffman.encode`, `decode`): tested against hpack's
   encodings (`tests/upstream/h2_golden.py`) and as a round trip on random
-  bytes. The HPACK theorems are stated for raw literals, which is what our
-  encoder sends; the decoder reads Huffman strings too.
+  bytes. The encoder sends a Huffman string only after checking it decodes
+  back (`huffmanForm`), so the HPACK theorems hold without a proof of the
+  code; a property shows the check never fails, so the encoder's blocks are
+  hpack's default encoder's, byte for byte.
 * **`H2.Conn`** (the connection state machine) and **`HTTP2Transport`**:
   conformance cases from httpcore's and h2's tests, properties (the same
   response however the bytes are split; bounded buffers on random bytes),
@@ -179,11 +197,18 @@ defects found while porting are recorded as UP-035 to UP-041, UP-056 and UP-057 
 * HTTP/2 protocol errors the server causes are `RemoteProtocolError`;
   httpcore raises them as `LocalProtocolError` (UP-056). The messages keep
   h2's wording where there is one, prefixed by the error code.
-* The HPACK encoder sends raw literals, never Huffman (hpack Huffman-codes
-  by default); a table size the peer lowers is applied up to 4096. The
-  decoder reads both. Received fields are validated as h2 does, but an
-  invalid response head resets its stream (an RFC 9113 stream error), where
-  h2 ends the connection.
+* The HPACK encoder Huffman-codes every literal, as hpack's default encoder
+  does (even where raw is shorter); a table size the peer lowers is applied
+  up to 4096. One difference: a never-indexed field that equals a static
+  table entry (`authorization`, `proxy-authorization` or `cookie` with an
+  empty value) stays a never-indexed literal, where hpack sends the index
+  and so drops the marking (RFC 7541 section 7.1.3); this keeps
+  `hpack_decode_encode` exact. Received fields are validated as h2 does, but
+  an invalid response head resets its stream (an RFC 9113 stream error),
+  where h2 ends the connection.
+* A request's `te` other than `trailers` is dropped, with the other
+  connection-specific fields (`h2_request_fields_clean`); h2 refuses to send
+  it (`ProtocolError`, which httpcore raises as `LocalProtocolError`).
 * h2 has no limit on PING, SETTINGS or other frames that make no progress,
   nor on the output its acknowledgements queue; ours has (see "Hostile HTTP/2
   peers"). A WINDOW_UPDATE of 0 is refused by the connection, where

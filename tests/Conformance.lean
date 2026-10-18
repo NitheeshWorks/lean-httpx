@@ -965,8 +965,8 @@ Each line of `tests/upstream/h2_golden.txt` is an outcome of h2's codecs
 (hyperframe 6.1.0, hpack 4.2.0, as h2 4.4.1 pins them), produced by
 `tests/upstream/h2_golden.py`. Frames hyperframe prints are parsed and
 printed back to the same bytes; frames it refuses are refused; hpack's
-blocks decode to its header lists and, where hpack sends no Huffman, our
-encoder prints the same block; hpack's Huffman codes match ours. -/
+blocks decode to its header lists and, for hpack's default (Huffman)
+encoder, ours prints the same block; hpack's Huffman codes match ours. -/
 
 def unhex (s : String) : ByteArray := Id.run do
   let cs := s.toList.toArray
@@ -1024,7 +1024,8 @@ def hpackGolden (name : String) (size : Nat) (huffman : Bool) (blocks : List (St
         ok := (← eqv "fields" (fieldsLine fs) fields) && ok
         let (ours, e') := e.encode (parseFields fields)
         e := e'
-        unless huffman do ok := (← eqv "block" (hexOf ours) block) && ok
+        -- our encoder is hpack's default one: Huffman literals
+        if huffman then ok := (← eqv "block" (hexOf ours) block) && ok
     pure ok
 
 def badHpackGolden (name maxList block cls : String) : Case := goldenCase "hpack" s!"{name} refused ({cls})" do

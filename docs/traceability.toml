@@ -418,9 +418,9 @@ test = ["tests/NativeH2.lean::/big-frame", "tests/Conformance.lean::not HTTP/2",
 [[requirement]]
 id = "hpack.codec"
 upstream = "hpack 4.2.0 hpack/hpack.py (Encoder.encode, Decoder.decode); RFC 7541 appendix C"
-title = "HPACK: integers, strings, Huffman decoding, static and dynamic tables, size updates; one block round trip"
+title = "HPACK: integers, strings, Huffman coding (sent as hpack's default encoder sends it, byte for byte), static and dynamic tables, size updates; one block round trip"
 status = "implemented"
-realises = ["LeanHttpx.Hpack.Encoder.encode", "LeanHttpx.Hpack.Decoder.decode", "LeanHttpx.Hpack.encodeStatic", "LeanHttpx.Hpack.Synced.encode", "LeanHttpx.Hpack.encodeStaticChecked"]
+realises = ["LeanHttpx.Hpack.Encoder.encode", "LeanHttpx.Hpack.Decoder.decode", "LeanHttpx.Hpack.encodeStr", "LeanHttpx.Hpack.huffmanForm", "LeanHttpx.Hpack.encodeStatic", "LeanHttpx.Hpack.Synced.encode", "LeanHttpx.Hpack.encodeStaticChecked"]
 theorem = ["LeanHttpx.Hpack.hpack_decode_encode", "LeanHttpx.Hpack.hpack_decode_encode_static", "LeanHttpx.theVerifiedH2"]
 test = ["tests/Conformance.lean::h2 golden hpack", "tests/Props.lean::HPACK: a sequence of blocks decodes on the executable path, any table size", "tests/Props.lean::HPACK API: chained Synced.encode blocks decode, the sides in step"]
 
@@ -448,7 +448,7 @@ upstream = "hpack 4.2.0 hpack/huffman.py, hpack/huffman_table.py (decode_huffman
 title = "Huffman code of RFC 7541 appendix B, canonical from its code lengths; EOS, long codes and bad padding refused"
 status = "tested"
 realises = ["LeanHttpx.Huffman.encode", "LeanHttpx.Huffman.decode", "LeanHttpx.Huffman.codes"]
-test = ["tests/Conformance.lean::h2 golden huffman", "tests/Props.lean::Huffman: decode (encode b) = b"]
+test = ["tests/Conformance.lean::h2 golden huffman", "tests/Props.lean::Huffman: decode (encode b) = b", "tests/Props.lean::HPACK: the Huffman form of any string decodes back (encodeStr never falls back to raw)"]
 
 [[requirement]]
 id = "h2.connection"
@@ -485,15 +485,24 @@ test = ["tests/Conformance.lean::CONTINUATION flood", "tests/NativeH2.lean::/con
 [[requirement]]
 id = "h2.concurrency"
 upstream = "httpcore tests/_sync/test_http2.py::test_http2_remote_max_streams_update"
-title = "Concurrent streams bounded by min(our MAX_CONCURRENT_STREAMS 100, the peer's); requests multiplexed on one connection"
+title = "Concurrent streams bounded by min(our MAX_CONCURRENT_STREAMS 100, the peer's); requests from many tasks multiplexed on one connection, no lock held across I/O, timeouts that fire under one Lean thread"
 status = "tested"
-realises = ["LeanHttpx.H2.Conn.canStart", "LeanHttpx.H2Pool", "LeanHttpx.H2Link.start"]
-test = ["tests/Conformance.lean::MAX_CONCURRENT_STREAMS updates", "tests/NativeH2.lean::multiplexed"]
+realises = ["LeanHttpx.H2.Conn.canStart", "LeanHttpx.H2Pool", "LeanHttpx.H2Pool.link", "LeanHttpx.H2Link.start", "LeanHttpx.H2Link.flush", "LeanHttpx.H2Link.ensureReader"]
+test = ["tests/Conformance.lean::MAX_CONCURRENT_STREAMS updates", "tests/NativeH2.lean::multiplexed", "tests/NativeH2.lean::64 concurrent requests on one client", "scripts/bench.sh"]
 
 [[requirement]]
 id = "h2.transport"
 upstream = "httpx tests/client/test_client.py (Client(http2=True)); httpcore/_sync/http2.py"
 title = "Client.new (http1 := false) (http2 := true): HTTP/2 with prior knowledge over TCP, errors as httpx classes, body memory and time bounded"
 status = "deviation"
-realises = ["LeanHttpx.HTTP2Transport.new", "LeanHttpx.httpTransport", "LeanHttpx.h2Fields", "LeanHttpx.Client.new"]
-test = ["tests/NativeH2.lean::/ok", "tests/NativeH2.lean::bench", "tests/Props.lean::HTTP/2: request fields are pseudo-headers then lower-case fields, credentials never indexed"]
+realises = ["LeanHttpx.HTTP2Transport.new", "LeanHttpx.httpTransport", "LeanHttpx.Client.new", "LeanHttpx.H2Link.readLoop", "LeanHttpx.H2Link.await", "LeanHttpx.refusedUnprocessed"]
+test = ["tests/NativeH2.lean::/ok", "tests/NativeH2.lean::bench", "tests/NativeH2.lean::stalled multiplexed stream"]
+
+[[requirement]]
+id = "h2.request-fields"
+upstream = "httpcore/_sync/http2.py (_send_request_headers); h2 utilities.normalize_outbound_headers"
+title = "Request fields on HTTP/2: pseudo-headers, names lower-cased, names and values stripped, connection-specific fields (RFC 9113 8.2.2) and te other than trailers removed, credentials and short cookies never indexed"
+status = "implemented"
+realises = ["LeanHttpx.H2.requestFields", "LeanHttpx.H2.connectionSpecific", "LeanHttpx.H2.outbound", "LeanHttpx.H2.neverIndex"]
+theorem = ["LeanHttpx.H2.h2_request_fields_clean", "LeanHttpx.H2.requestFields_clean", "LeanHttpx.theVerifiedH2"]
+test = ["tests/NativeH2.lean::RFC 9113 8.2.2 validating server", "tests/Props.lean::HTTP/2: request fields as h2 sends them: pseudo-headers, lower case, stripped, no connection-specific field"]

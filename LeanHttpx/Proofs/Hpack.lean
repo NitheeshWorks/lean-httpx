@@ -122,16 +122,34 @@ theorem readInt_encodeInt (n flags v : Nat) (hp : PrefixOk n flags) (hv : v < 2 
 
 theorem readStr_encodeStr (s : ByteArray) (hs : s.size < 2 ^ 28) (pre post : ByteArray) :
     readStr (pre ++ (encodeStr s ++ post)) pre.size = .ok (s, pre.size + (encodeStr s).size) := by
-  have hp : PrefixOk 7 0 := by unfold PrefixOk; decide
   unfold encodeStr
-  rw [ByteArray.append_assoc]
-  simp only [readStr, readInt_encodeInt 7 0 s.size hp hs, bind, Except.bind]
-  have := slice_mid (pre ++ encodeInt 7 0 s.size) s post (err "String literal is longer than the block")
-  rw [ByteArray.append_assoc] at this
-  rw [ByteArray.size_append] at this
-  rw [this]
-  simp [pure, Except.pure, ByteArray.size_append]
-  omega
+  cases hh : huffmanForm s with
+  | some h =>
+    have hc : Huffman.decode h = some s ∧ h.size < 2 ^ 28 := by
+      unfold huffmanForm at hh
+      simp only at hh
+      by_cases hc : Huffman.decode (Huffman.encode s) = some s ∧ (Huffman.encode s).size < 2 ^ 28
+      · rw [if_pos hc] at hh; cases hh; exact hc
+      · rw [if_neg hc] at hh; cases hh
+    have hp : PrefixOk 7 128 := by unfold PrefixOk; decide
+    simp only
+    rw [ByteArray.append_assoc]
+    simp only [readStr, readInt_encodeInt 7 128 h.size hp hc.2, bind, Except.bind]
+    have := slice_mid (pre ++ encodeInt 7 128 h.size) h post (err "String literal is longer than the block")
+    rw [ByteArray.append_assoc, ByteArray.size_append] at this
+    rw [this]
+    simp [pure, Except.pure, ByteArray.size_append, hc.1]
+    omega
+  | none =>
+    have hp : PrefixOk 7 0 := by unfold PrefixOk; decide
+    simp only
+    rw [ByteArray.append_assoc]
+    simp only [readStr, readInt_encodeInt 7 0 s.size hp hs, bind, Except.bind]
+    have := slice_mid (pre ++ encodeInt 7 0 s.size) s post (err "String literal is longer than the block")
+    rw [ByteArray.append_assoc, ByteArray.size_append] at this
+    rw [this]
+    simp [pure, Except.pure, ByteArray.size_append]
+    omega
 
 theorem encodeInt_head (n flags v : Nat) : ∃ y rest, encodeInt n flags v = beArr 1 y ++ rest ∧
     flags ≤ y ∧ y < flags + 2 ^ n := by

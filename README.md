@@ -73,7 +73,8 @@ def demo : IO Unit := do
 | `httpx.HTTPStatusError`, `httpx.TooManyRedirects`, ... | `HTTPError.httpStatusError`, `.tooManyRedirects`, ... |
 
 HTTP/2, as in httpx's docs (`docs/http2.md`), here with prior knowledge over TCP (there
-is no TLS, so no ALPN): requests from several tasks share one connection, as streams.
+is no TLS, so no ALPN): requests from several tasks share one connection, as streams,
+with HPACK blocks byte for byte as h2 sends them.
 
 ```lean
 def demo2 : IO Unit := do
@@ -140,6 +141,9 @@ Every theorem below is checked by Lean with no axioms beyond `propext`, `Quot.so
   header-list limit, with the dynamic table in step on both sides; without the dynamic
   table the decoder is left unchanged; and a sequence of blocks, the table carried along,
   decodes to its sequence of lists. `Hpack.Synced.encode` returns the block with its proof.
+* **HTTP/2 requests** (`h2_request_fields_clean`): what a server decodes from the block of
+  a request has no connection-specific field (RFC 9113 section 8.2.2), whatever fields the
+  request was given.
 * **Basic credentials** (`basic_auth_header`): `parseBasicAuth (basicAuthHeader u p) =
   some (u, p)` when the user-id has no colon; from `Base64.decode_encode`.
 

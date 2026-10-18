@@ -14,6 +14,12 @@ for c in /big-body /big-chunked; do
   if (( status != 0 )); then fail=1; fi
 done
 ./.lake/build/bin/native2 || fail=1
+# 64 concurrent requests on one client, and a stalled multiplexed stream,
+# with one and with two Lean threads
+for n in 1 2; do
+  echo "== native2 concurrency, LEAN_NUM_THREADS=$n =="
+  LEAN_NUM_THREADS=$n timeout 120 ./.lake/build/bin/native2 concurrency || fail=1
+done
 out=$(./.lake/build/bin/native2 bench); status=$?
 grep -E '^(RESULT|  FAIL)' <<<"$out"
 if (( status != 0 )); then fail=1; fi
