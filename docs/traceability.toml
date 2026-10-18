@@ -242,7 +242,7 @@ upstream = "tests/client/test_redirects.py::test_too_many_redirects"
 title = "At most max_redirects redirects are followed; one more is TooManyRedirects"
 status = "implemented"
 realises = ["LeanHttpx.sendHandlingRedirects", "LeanHttpx.redirectLoop"]
-theorem = ["LeanHttpx.redirect_bounded", "LeanHttpx.redirect_history_le"]
+theorem = ["LeanHttpx.redirect_bounded", "LeanHttpx.redirect_history_le", "LeanHttpx.redirect_bounded_satisfiable"]
 test = ["tests/Conformance.lean::too many redirects", "tests/Conformance.lean::multiple redirects"]
 
 [[requirement]]
@@ -348,8 +348,34 @@ id = "transport.http"
 upstream = "httpcore tests/_sync/test_http11.py::test_http11_connection"
 title = "HTTPTransport: HTTP/1.1 over TCP, one connection per request, Connection: close; no TLS, pooling or proxies"
 status = "deviation"
-realises = ["LeanHttpx.HTTPTransport", "LeanHttpx.toH1Request"]
-test = ["tests/Conformance.lean::request printing"]
+realises = ["LeanHttpx.HTTPTransport", "LeanHttpx.toH1Request", "LeanHttpx.readResponse", "LeanHttpx.H1.readResponse"]
+theorem = ["LeanHttpx.H1.readResponse_eq_parseResponse"]
+test = ["tests/Conformance.lean::request printing", "tests/Native.lean::/keep-open", "tests/Native.lean::/chunked-open", "tests/Native.lean::/informational", "tests/Native.lean::/close-delimited", "tests/Native.lean::/silent"]
+
+[[requirement]]
+id = "transport.limits"
+upstream = "httpcore/_sync/http11.py::MAX_INCOMPLETE_EVENT_SIZE"
+title = "Hostile responses: head at most 100 KiB ('Receive buffer too long'), chunk sizes of at most 20 hex digits, body read by its framing, errors keep their httpx class"
+status = "tested"
+realises = ["LeanHttpx.H1.maxIncompleteEventSize", "LeanHttpx.H1.headEnd?", "LeanHttpx.H1.scanChunks", "LeanHttpx.H1.readChunked", "LeanHttpx.HTTPError.ofString?"]
+test = ["tests/Native.lean::/big-header", "tests/Native.lean::/many-headers", "tests/Native.lean::/endless-head", "tests/Native.lean::/long-chunk-line", "tests/Native.lean::/huge-chunk-size", "tests/Native.lean::/short-body", "tests/Native.lean::/short-chunked", "tests/Props.lean::H1.readChunked (slices) agrees with the chunked codec on damaged and intact bodies", "tests/Props.lean::H1.scanChunks stops where the chunked codec ends, and never early", "tests/Props.lean::an httpx error raised in IO reads back as the same class and message"]
+
+[[requirement]]
+id = "numbers.bounded"
+upstream = "h11/_abnf.py::chunk_size; CPython int() max_str_digits"
+title = "Numbers from input are length-checked before conversion: Content-Length, port, cookie Max-Age and dates at most 4300 digits (int()), chunk size at most 20 hex digits (h11); status is 3 digits"
+status = "implemented"
+realises = ["LeanHttpx.maxIntDigits", "LeanHttpx.H1.framingOf", "LeanHttpx.URLParse.normalizePort", "LeanHttpx.CookieJar.natOf?", "LeanHttpx.CookieJar.intOf?", "LeanHttpx.H1.chunkSizeLine", "LeanHttpx.H1.maxChunkDigits"]
+theorem = ["LeanHttpx.H1.chunked_decode_encode", "LeanHttpx.url_parse_print_ext"]
+test = ["tests/Native.lean::/long-content-length", "tests/Native.lean::/huge-chunk-size", "tests/Conformance.lean::port with 4301 digits", "tests/Conformance.lean::cookie max-age with 5000 digits"]
+
+[[requirement]]
+id = "transport.bench"
+upstream = "review measurement: httpx 0.28.1, 200 MiB body, 0.46 s / 445 MB"
+title = "A 200 MiB Content-Length or chunked body within twice upstream's time and memory"
+status = "tested"
+realises = ["LeanHttpx.readUntil", "LeanHttpx.H1.readChunked"]
+test = ["tests/Native.lean::bench"]
 
 [[requirement]]
 id = "asyncclient"

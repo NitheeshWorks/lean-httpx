@@ -50,6 +50,13 @@ def RedirectBounded : Prop :=
       sendHandlingRedirects (m := Id) (fun q => pure (send q)) (pure jar) true maxRedirects q =
         .error (.tooManyRedirects "Exceeded maximum allowed redirects." q')
 
+/-- The hypothesis of `RedirectBounded` can be met: some server redirects
+every request in a way the client can follow. -/
+def RedirectBoundedSatisfiable : Prop :=
+  ∃ (send : Request → Except HTTPError Response), ∀ q, ∃ r, send q = .ok r ∧ r.hasRedirectLocation = true ∧
+    ∀ (h : List Response) (cs : Cookies) (now : Int), ∃ q',
+      buildRedirectRequest q { r with history := h } cs now = .ok q'
+
 /-- Basic credentials decode back from the header. -/
 def BasicAuthHeader : Prop :=
   ∀ (u p : String), ':' ∉ u.toList → parseBasicAuth (basicAuthHeader u p) = some (u, p)

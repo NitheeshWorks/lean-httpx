@@ -187,7 +187,8 @@ def Canonical (r : ParseResult) : Prop :=
   schemeCanonical r.scheme.toList = true ∧
   r.userinfo.toList.all userinfoSafe = true ∧
   hostCanonical r.host.toList = true ∧
-  (r.port.isNone || r.port != defaultPort r.scheme.toList) = true ∧
+  ((r.port.isNone || r.port != defaultPort r.scheme.toList) &&
+    r.port.all fun n => (Keel.Codec.decimal n).length ≤ maxIntDigits) = true ∧
   r.pathCanonical = true ∧
   (r.query.map fun q => q.toList.all querySafe).getD true = true ∧
   (r.fragment.map fun f => f.toList.all fragSafe).getD true = true

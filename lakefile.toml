@@ -19,6 +19,12 @@
     name = "conformance"
     root = "tests.Conformance"
 
+# Native checks of HTTPTransport against a hostile in-process server, and the
+# 200 MiB body benchmark: `lake exe native`, `lake exe native bench`.
+[[lean_exe]]
+name = "native"
+root = "tests.Native"
+
 [[require]]
 name = "LeanJson"
 git = "https://github.com/NitheeshWorks/lean-json"

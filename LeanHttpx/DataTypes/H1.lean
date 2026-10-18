@@ -1,3 +1,5 @@
+import LeanHttpx.DataTypes.Chars
+
 /-!
 # HTTP/1.1 messages on the wire (RFC 9112)
 

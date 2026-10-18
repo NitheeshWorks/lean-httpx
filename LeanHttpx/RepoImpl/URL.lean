@@ -131,10 +131,11 @@ def encodeHost (h : List Char) : Except InvalidURL (List Char) :=
 
 /-- Parse and normalise a port (upstream `normalize_port`). Only ASCII digits
 are a port (RFC 3986 `port = *DIGIT`); upstream's `int()` also takes signs,
-spaces and underscores (see CONTRIBUTING). -/
+spaces and underscores (see CONTRIBUTING). More than `maxIntDigits` digits
+is invalid, as `int()` raises. -/
 def normalizePort (p : List Char) (scheme : List Char) : Except InvalidURL (Option Nat) :=
   if p.isEmpty then .ok none
-  else if p.all Char.isDigit then
+  else if p.all Char.isDigit && p.length ≤ maxIntDigits then
     let n := digitsValue p
     .ok (if some n == defaultPort scheme then none else some n)
   else .error ⟨s!"Invalid port: {r p}"⟩

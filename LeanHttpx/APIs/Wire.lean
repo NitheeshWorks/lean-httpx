@@ -25,10 +25,10 @@ def encodeResponse (m : List UInt8) (r : Response) :
     Option {b : ByteArray // ∀ rest, parseResponse m (b ++ rest) = some (r, rest)} :=
   if h : r.ok m = true then some ⟨printResponse m r, h1_response_parse_print_ext m r h⟩ else none
 
-/-- Chunk-encode non-empty chunks. -/
+/-- Chunk-encode non-empty chunks, each below `maxChunkSize`. -/
 def encodeChunks (cs : List ByteArray) :
     Option {b : ByteArray // ∀ rest, decodeChunked (b ++ rest) = some (cs, rest)} :=
-  if h : ∀ c ∈ cs, 0 < c.size then some ⟨encodeChunked cs, chunked_decode_encode cs h⟩ else none
+  if h : ∀ c ∈ cs, 0 < c.size ∧ c.size < maxChunkSize then some ⟨encodeChunked cs, chunked_decode_encode cs h⟩ else none
 
 end H1
 

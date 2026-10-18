@@ -25,7 +25,9 @@ Module map: `RepoImpl/URL.lean` (parser and printer), `URLOps.lean` (properties,
 and properties), `Auth.lean`, `Redirects.lean` (pure redirect logic and the bounded
 loop over any monad), `Client.lean`, `Transports.lean` (`Transport`, `MockTransport`,
 `ASGITransport`), `H1.lean`/`H1Body.lean` (the HTTP/1.1 codecs, built from
-`Keel.Codec`), `Codec.lean` (three combinators added to `Keel.Codec`: `guard`,
+`Keel.Codec`, and `readResponse`, the transport's reader, proved equal to the
+response codec), `H1Stream.lean` (where a response ends on a stream: the
+head's blank line, the last chunk, and h11's limits), `Codec.lean` (three combinators added to `Keel.Codec`: `guard`,
 `fail`, `bytesN`), `Decoders.lean` (inflate, gzip, zlib), `Base64.lean`, `Hash.lean`,
 `Text.lean`. `scripts/gen-aggregators.py` regenerates the layer aggregator modules.
 
@@ -33,6 +35,21 @@ loop over any monad), `Client.lean`, `Transports.lean` (`Transport`, `MockTransp
 `takeBytes` (a loop into a `ByteArray`), or a bounded `for` loop. There is no
 `Parser.fix` (so no need for `fixDepth`) and no recursion per byte; a 5 MB body,
 20000 header lines and a 60000-character URL parse in constant stack.
+
+**Hostile input.** `HTTPTransport` reads as httpcore does: the head first,
+at most 100 KiB of it (httpcore's `MAX_INCOMPLETE_EVENT_SIZE`; "Receive
+buffer too long"), then exactly what the head's framing says (`Content-Length`
+bytes, chunks to the last one, or to the end of the connection), every read
+under the read timeout. Every number read from input is length-checked
+before it is converted, since converting `n` digits costs time quadratic in
+`n`: `Content-Length`, ports and cookie `Max-Age` and date fields at most
+`maxIntDigits` (4300, Python's `int()` limit), chunk sizes at most 20 hex
+digits (h11), status codes 3 digits. `tests/Native.lean` (`scripts/bench.sh`,
+run in CI) checks all of this against a hostile server in the test process,
+and bounds a 200 MiB body to twice upstream's time and memory. Errors keep
+their httpx class (`ReadTimeout`, `RemoteProtocolError`, ...): a transport
+raises them as `"Name: message"` and `Client.sendSingle` reads the class
+back (`HTTPError.ofString?`); any other exception propagates unchanged.
 
 Everything except the transport module is a pure function. This is
 load-bearing: a round-trip property of a function is an equation that
@@ -77,6 +94,15 @@ Listed here with the reason, and in `docs/traceability.toml` with
   (`cookie_match_domain_path`).
 * **Query strings** (`parse_qs`/`urlencode`): tested as a round trip on random
   keys and values.
+* **`H1.readChunked` and `H1.scanChunks`**: the transport copies a chunked
+  body slice by slice (`readChunked`, which runs the codec's own size-line and
+  last-chunk parsers) rather than through `takeBytes`, which reads byte by byte
+  and is too slow for a large chunk; that it agrees with the chunked codec,
+  and that `scanChunks` stops exactly where the codec ends, is tested on
+  intact and damaged bodies. A `Content-Length` body needs no test: the
+  transport's reader is the codec (`readResponse_eq_parseResponse`).
+* **`HTTPTransport`** (time, memory, limits and error classes): native checks
+  against a hostile local server and a benchmark, `tests/Native.lean`.
 * **`URL.parse` reaches canonical form**: `build` checks `ParseResult.Canonical`
   at run time; that the check never fails on any input is tested on random
   URL-like strings (it is what makes `URL` carry its invariant).
@@ -103,6 +129,15 @@ defects found while porting are recorded as UP-035 to UP-041 (see
   configuration. `AsyncClient` is the same client in `IO`.
 * `HTTPTransport` sends one request per connection with `Connection: close`;
   there is no TLS (`https` is `UnsupportedProtocol`) and no connection pool.
+  A head is limited to 100 KiB in all, where h11 counts only what is buffered
+  while incomplete; error messages say the same thing in different words
+  where h11 includes the offending bytes.
+* Numbers past `maxIntDigits` digits: a port is invalid and a cookie
+  `Max-Age` drops the cookie, as upstream (`int()` raises); a cookie date
+  field that long makes the date invalid (a session cookie), where
+  `http.cookiejar` catches the exception and drops every cookie of the
+  response. A chunk size of more than 20 hex digits is refused (h11's limit),
+  so `chunked_decode_encode` is stated for chunks below 2^80 bytes.
 * The default `User-Agent` is `lean-httpx/0.1.0`.
 * An authentication flow sends at most 32 requests (upstream's generators are
   unbounded; Basic and Digest send at most two).
@@ -112,6 +147,9 @@ defects found while porting are recorded as UP-035 to UP-041 (see
 * `tests/Props.lean`: seeded property tests, no dependencies, under a second.
 * `tests/Conformance.lean`: cases re-expressed from the upstream suite; each
   names the upstream test (`tests/test_x.py::test_y`).
+* `tests/Native.lean`: `HTTPTransport` against a hostile server in the same
+  process (`lake exe native`), and the 200 MiB benchmark (`scripts/bench.sh`).
+  `lake exe native serve` runs only the server, to run upstream httpx against.
 * `tests/pbt/`: a separate Lake package, the one place an external dependency
   (`plausible`) is taken.
 

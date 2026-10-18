@@ -74,4 +74,52 @@ theorem redirect_bounded (send : Request → Except HTTPError Response) (hs : Al
 theorem redirect_history_le {maxRedirects : Nat} (r : Bounded maxRedirects) :
     r.val.history.length ≤ maxRedirects := r.property
 
+/-! ## The hypothesis of `redirect_bounded` is met
+
+A server that answers every request with `302 Found` to `http://a/#f`. The
+location is absolute and has a fragment, so the redirect URL does not depend
+on the request, and building the next request always succeeds. -/
+
+/-- The redirect every request gets. -/
+def loopResponse : Response := { statusCode := 302, headers := ⟨[("Location", "http://a/#f")]⟩ }
+
+/-- A server that redirects every request. -/
+def redirectingServer : Request → Except HTTPError Response := fun _ => .ok loopResponse
+
+/-- The parsed location: `http`, host `a`, path `/`, fragment `f`. -/
+def loopRef : ParseResult := { scheme := "http", host := "a", path := "/", fragment := some "f" }
+
+theorem loop_parse : (URL.parse "http://a/#f").toOption.map (·.ref) = some loopRef := by decide +kernel
+
+theorem unquote_f : Text.unquote "f" = "f" := by
+  simp [Text.unquote, String.contains_char_eq]
+
+/-- **`redirect_bounded` is not vacuous**: `redirectingServer` satisfies
+`AlwaysRedirects`, so for it the loop ends in `TooManyRedirects`. -/
+theorem alwaysRedirects_redirectingServer : AlwaysRedirects redirectingServer := by
+  intro q
+  refine ⟨loopResponse, rfl, by decide +kernel, ?_⟩
+  intro h cs now
+  have hp := loop_parse
+  cases hu : URL.parse "http://a/#f" with
+  | error e => rw [hu] at hp; cases hp
+  | ok u =>
+    rw [hu] at hp
+    simp only [Except.toOption, Option.map_some, Option.some.injEq] at hp
+    have hloc0 : loopResponse.headers.get? "Location" = some "http://a/#f" := by decide +kernel
+    have hloc : ({ loopResponse with history := h } : Response).headers.get? "Location" = some "http://a/#f" :=
+      hloc0
+    have hs : u.scheme.isEmpty = false := by simp [URL.scheme, hp, loopRef]
+    have hh : u.host.isEmpty = false := by simp [URL.host, hp, loopRef]
+    have hr : u.isRelativeUrl = false := by
+      simp [URL.isRelativeUrl, URL.isAbsoluteUrl, hp, loopRef]
+    have hf : u.fragment.isEmpty = false := by simp [URL.fragment, hp, loopRef, unquote_f]
+    unfold buildRedirectRequest redirectUrl
+    simp only [hloc, Option.getD_some, hu, pure_bind, hs, hh, hr, hf, Bool.not_false, Bool.true_and,
+      Bool.and_false, Bool.false_eq_true, ite_false, bind_pure]
+    exact ⟨_, rfl⟩
+
+theorem redirect_bounded_satisfiable :
+    ∃ send, AlwaysRedirects send := ⟨redirectingServer, alwaysRedirects_redirectingServer⟩
+
 end LeanHttpx

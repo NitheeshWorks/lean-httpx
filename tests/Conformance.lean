@@ -136,6 +136,16 @@ def urlCases : List Case := [
     allOk [eqv "port" (← url! "https://example.com:443/").port none]⟩,
   ⟨"tests/models/test_url.py::test_url_invalid_port", "invalid port", do
     allOk [eqv "err" (← urlErr "https://example.com:abc/") "Invalid port: 'abc'"]⟩,
+  ⟨"httpx/_urlparse.py::normalize_port (int() refuses more than 4300 digits)", "port with 4301 digits", do
+    let digits := String.ofList (List.replicate 4301 '1')
+    allOk [eqv "err" (← urlErr s!"https://example.com:{digits}/") s!"Invalid port: '{digits}'",
+      eqv "4300 digits parse" ((URL.parse s!"https://example.com:{String.ofList (List.replicate 4300 '1')}/").toOption.isSome) true]⟩,
+  ⟨"http/cookiejar.py::_normalized_cookie_tuples (int(max-age) refuses more than 4300 digits)", "cookie max-age with 5000 digits", do
+    let c ← mockClient fun _ => Response.new 200
+      (headers := [("set-cookie", s!"a=b; Max-Age={String.ofList (List.replicate 5000 '1')}"), ("set-cookie", "c=d; Max-Age=60")])
+    let _ ← c.get "http://example.org/"
+    let j ← c.cookies
+    allOk [eqv "dropped" ((j.get? "a").toOption.join).isNone true, eqv "kept" ((j.get? "c").toOption.join) (some "d")]⟩,
   ⟨"tests/models/test_url.py::test_url_normalized_path", "normalized path", do
     allOk [eqv "path" (← url! "https://example.com/abc/def/../ghi/./jkl").path "/abc/ghi/jkl"]⟩,
   ⟨"tests/models/test_url.py::test_url_escaped_path", "escaped path", do
@@ -400,7 +410,7 @@ def cookieCases : List Case := [
     eqv "r" c.pyRepr "<Cookies[<Cookie foo=bar for http://blah.com />, <Cookie fizz=buzz for http://hello.com />]>"⟩,
   ⟨"tests/client/test_cookies.py::test_set_cookie", "client sends cookies", do
     let c ← Client.new (cookies := [("example-name", "example-value")])
-      (transport := MockTransport fun r => Response.new 200 (json := some (json% {"cookies": ((r.headers.get? "cookie").getD "")})))
+      (transport := MockTransport fun r => Response.new 200 (json := json% {"cookies": ((r.headers.get? "cookie").getD "")}))
     let r ← c.get "http://example.org/echo_cookies"
     eqv "body" r.text "{\"cookies\":\"example-name=example-value\"}"⟩,
   ⟨"tests/client/test_cookies.py::test_get_cookie", "client stores cookies", do
@@ -411,7 +421,7 @@ def cookieCases : List Case := [
   ⟨"tests/client/test_cookies.py::test_cookie_persistence", "cookie persistence", do
     let c ← mockClient fun r =>
       if r.url.path == "/set_cookie" then Response.new 200 (headers := [("set-cookie", "example-name=example-value")])
-      else Response.new 200 (json := some (json% {"cookies": ((r.headers.get? "cookie").getD "")}))
+      else Response.new 200 (json := json% {"cookies": ((r.headers.get? "cookie").getD "")})
     let r1 ← c.get "http://example.org/echo_cookies"
     let _ ← c.get "http://example.org/set_cookie"
     let r2 ← c.get "http://example.org/echo_cookies"
@@ -435,10 +445,10 @@ def modelCases : List Case := [
   ⟨"tests/models/test_requests.py::test_no_content", "no content", do
     eqv "cl" ((← req! "GET" "http://example.org").headers.contains "Content-Length") false⟩,
   ⟨"tests/models/test_requests.py::test_content_length_header", "content length", do
-    eqv "cl" ((← req! "POST" "http://example.org" (content := some (Content.text "test 123"))).headers.get? "Content-Length")
+    eqv "cl" ((← req! "POST" "http://example.org" (content := "test 123")).headers.get? "Content-Length")
       (some "8")⟩,
   ⟨"tests/models/test_requests.py::test_json_encoded_data", "json body", do
-    let r ← req! "POST" "http://example.org" (json := some (json% {"test": 123}))
+    let r ← req! "POST" "http://example.org" (json := json% {"test": 123})
     allOk [eqv "ct" (r.headers.get? "Content-Type") (some "application/json"), eqv "body" (str r.content) "{\"test\":123}"]⟩,
   ⟨"tests/models/test_requests.py::test_url_encoded_data", "form body", do
     let r ← req! "POST" "http://example.org" (data := [("test", "123")])
@@ -448,7 +458,7 @@ def modelCases : List Case := [
     eqv "host" ((← req! "GET" "http://example.org" (headers := [("Host", "1.2.3.4:80")])).headers.get? "Host")
       (some "1.2.3.4:80")⟩,
   ⟨"tests/models/test_requests.py::test_override_content_length_header", "override content-length", do
-    let r ← req! "POST" "http://example.org" (headers := [("Content-Length", "8")]) (content := some (Content.text "test 123"))
+    let r ← req! "POST" "http://example.org" (headers := [("Content-Length", "8")]) (content := "test 123")
     eqv "cl" (r.headers.getList "Content-Length") ["8"]⟩,
   ⟨"tests/models/test_requests.py::test_url", "request url", do
     let r ← req! "GET" "http://example.org"
@@ -459,19 +469,19 @@ def modelCases : List Case := [
     let r ← except! (Request.new "GET" (← url! "http://example.com") (params := some [("a", "b")]))
     eqv "url" (toString r.url) "http://example.com?a=b"⟩,
   ⟨"tests/models/test_responses.py::test_response", "response", do
-    let r := Response.new 200 (content := some (Content.text "Hello, world!"))
+    let r := Response.new 200 (content := "Hello, world!")
     allOk [eqv "status" r.statusCode 200, eqv "reason" r.reasonPhrase "OK", eqv "text" r.text "Hello, world!"]⟩,
   ⟨"tests/models/test_responses.py::test_response_content", "response content", do
-    let r := Response.new 200 (content := some (Content.text "Hello, world!"))
+    let r := Response.new 200 (content := "Hello, world!")
     allOk [eqv "content" (str r.content) "Hello, world!", eqv "cl" (r.headers.get? "Content-Length") (some "13")]⟩,
   ⟨"tests/models/test_responses.py::test_response_text", "response text", do
-    let r := Response.new 200 (text := some "Hello, world!")
+    let r := Response.new 200 (text := "Hello, world!")
     allOk [eqv "text" r.text "Hello, world!", eqv "ct" (r.headers.get? "Content-Type") (some "text/plain; charset=utf-8")]⟩,
   ⟨"tests/models/test_responses.py::test_response_html", "response html", do
-    let r := Response.new 200 (html := some "<html><body>Hello, world!</html></body>")
+    let r := Response.new 200 (html := "<html><body>Hello, world!</html></body>")
     eqv "ct" (r.headers.get? "Content-Type") (some "text/html; charset=utf-8")⟩,
   ⟨"tests/models/test_responses.py::test_response_json", "response json", do
-    let r := Response.new 200 (json := some (json% {"hello": "world"}))
+    let r := Response.new 200 (json := json% {"hello": "world"})
     allOk [eqv "text" r.text "{\"hello\":\"world\"}", eqv "ct" (r.headers.get? "Content-Type") (some "application/json"),
       eqv "json" (match r.json with | .ok j => toString j | .error _ => "error") "{\"hello\":\"world\"}"]⟩,
   ⟨"tests/models/test_responses.py::test_raise_for_status", "raise_for_status", do
@@ -486,24 +496,24 @@ def modelCases : List Case := [
       eqv "500" (msg 500) "Server error '500 Internal Server Error' for url 'https://example.org'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/500",
       eqv "600" (msg 600) "Invalid status code '600 ' for url 'https://example.org'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/600"]⟩,
   ⟨"tests/models/test_responses.py::test_response_default_text_encoding", "default text encoding", do
-    let r := Response.new 200 (content := some (Content.text "Hello, world!")) (headers := [("Content-Type", "text/plain")])
+    let r := Response.new 200 (content := "Hello, world!") (headers := [("Content-Type", "text/plain")])
     allOk [eqv "text" r.text "Hello, world!", eqv "enc" r.encoding "utf-8"]⟩,
   ⟨"tests/models/test_responses.py::test_response_set_explicit_encoding", "latin-1 charset", do
-    let r := Response.new 200 (content := some (Content.bytes "Latin 1: ÿ".toUTF8))
+    let r := Response.new 200 (content := Content.bytes "Latin 1: ÿ".toUTF8)
       (headers := [("Content-Type", "text-plain; charset=iso-8859-1")])
     allOk [eqv "enc" r.encoding "iso-8859-1", eqv "text" r.text "Latin 1: Ã¿"]⟩,
   ⟨"tests/models/test_responses.py::test_response_non_text_encoding", "non-text encoding", do
-    let r := Response.new 200 (content := some (Content.text "xyz")) (headers := [("Content-Type", "image/png")])
+    let r := Response.new 200 (content := "xyz") (headers := [("Content-Type", "image/png")])
     allOk [eqv "text" r.text "xyz", eqv "enc" r.encoding "utf-8"]⟩,
   ⟨"tests/models/test_responses.py::test_response_force_encoding", "unknown charset falls back", do
-    let r := Response.new 200 (content := some (Content.text "Hello")) (headers := [("Content-Type", "text/plain; charset=invalid-codec-name")])
+    let r := Response.new 200 (content := "Hello") (headers := [("Content-Type", "text/plain; charset=invalid-codec-name")])
     eqv "enc" r.encoding "utf-8"⟩,
   ⟨"tests/models/test_responses.py::test_value_error_without_request", "properties", do
     let r := Response.new 404
     allOk [eqv "is_error" r.isError true, eqv "client" r.isClientError true, eqv "server" r.isServerError false,
       eqv "redirect" r.isRedirect false, eqv "success" r.isSuccess false]⟩,
   ⟨"tests/models/test_responses.py::test_response_repr", "response repr", do
-    eqv "r" (reprStr (Response.new 200 (content := some (Content.text "Hello, world!")))) "<Response [200 OK]>"⟩,
+    eqv "r" (reprStr (Response.new 200 (content := "Hello, world!"))) "<Response [200 OK]>"⟩,
   ⟨"tests/test_decoders.py::test_gzip", "gzip decoding", do
     -- gzip.compress(b"test 123", mtime=0)
     let gz := ByteArray.mk #[31, 139, 8, 0, 0, 0, 0, 0, 2, 255, 43, 73, 45, 46, 81, 48, 52, 50, 6, 0, 223, 15, 105, 194, 8, 0, 0, 0]
@@ -532,8 +542,8 @@ def modelCases : List Case := [
 /-! ## The client (`tests/client/`) -/
 
 def echo (r : Request) : Response :=
-  Response.new 200 (json := some (json% {"method": (r.method), "url": (toString r.url),
-    "headers": (Json.obj (r.headers.multiItems.map fun (k, v) => (k, Json.str v)).toArray), "body": (str r.content)}))
+  Response.new 200 (json := json% {"method": (r.method), "url": (toString r.url),
+    "headers": (Json.obj (r.headers.multiItems.map fun (k, v) => (k, Json.str v)).toArray), "body": (str r.content)})
 
 def field (r : Response) (k : String) : String :=
   match r.json with
@@ -564,10 +574,10 @@ def redirects (r : Request) : Response :=
   else if p == "/redirect_no_body" then loc 303 "/redirect_body_target"
   else if p == "/redirect_body_target" then echo r
   else if p == "/cross_subdomain" then
-    if r.headers.get? "host" == some "example.org" then loc 301 "https://www.example.org/cross_subdomain" else Response.new 200 (text := some "Hello, world!")
+    if r.headers.get? "host" == some "example.org" then loc 301 "https://www.example.org/cross_subdomain" else Response.new 200 (text := "Hello, world!")
   else if p == "/redirect_custom_scheme" then loc 301 "market://details?id=42"
   else if r.method == "HEAD" then Response.new 200
-  else Response.new 200 (html := some "<html><body>Hello, world!</body></html>")
+  else Response.new 200 (html := "<html><body>Hello, world!</body></html>")
 
 def clientCases : List Case := [
   ⟨"tests/client/test_client.py::test_get", "get", do
@@ -582,11 +592,11 @@ def clientCases : List Case := [
     allOk [eqv "status" r.statusCode 200, eqv "header" ((field r "headers").contains "custom-header") true]⟩,
   ⟨"tests/client/test_client.py::test_post", "post", do
     let c ← mockClient echo
-    let r ← c.post "http://example.org/" (content := some (Content.text "Hello, world!"))
+    let r ← c.post "http://example.org/" (content := "Hello, world!")
     allOk [eqv "status" r.statusCode 200, eqv "body" (field r "body") "Hello, world!"]⟩,
   ⟨"tests/client/test_client.py::test_post_json", "post json", do
     let c ← mockClient echo
-    let r ← c.post "http://example.org/" (json := some (json% {"text": "Hello, world!"}))
+    let r ← c.post "http://example.org/" (json := json% {"text": "Hello, world!"})
     eqv "body" (field r "body") "{\"text\":\"Hello, world!\"}"⟩,
   ⟨"tests/client/test_client.py::test_raise_for_status", "client raise_for_status", do
     let c ← mockClient fun r => Response.new (((r.url.path.drop 8).toString.toNat?).getD 200)
@@ -599,10 +609,10 @@ def clientCases : List Case := [
     eqv "status" (← c.head "http://example.org/").statusCode 200⟩,
   ⟨"tests/client/test_client.py::test_put", "put", do
     let c ← mockClient echo
-    eqv "method" (field (← c.put "http://example.org/" (content := some (Content.text "x"))) "method") "PUT"⟩,
+    eqv "method" (field (← c.put "http://example.org/" (content := "x")) "method") "PUT"⟩,
   ⟨"tests/client/test_client.py::test_patch", "patch", do
     let c ← mockClient echo
-    eqv "method" (field (← c.patch "http://example.org/" (content := some (Content.text "x"))) "method") "PATCH"⟩,
+    eqv "method" (field (← c.patch "http://example.org/" (content := "x")) "method") "PATCH"⟩,
   ⟨"tests/client/test_client.py::test_delete", "delete", do
     let c ← mockClient echo
     eqv "method" (field (← c.delete "http://example.org/") "method") "DELETE"⟩,
@@ -689,15 +699,15 @@ def clientCases : List Case := [
 def redirectCases : List Case := [
   ⟨"tests/client/test_redirects.py::test_redirect_301", "301", do
     let c ← mockClient redirects
-    let r ← c.post "https://example.org/redirect_301" (followRedirects := some true)
+    let r ← c.post "https://example.org/redirect_301" (followRedirects := true)
     allOk [eqv "status" r.statusCode 200, eqv "url" (toString r.url) "https://example.org/", eqv "hist" r.history.length 1]⟩,
   ⟨"tests/client/test_redirects.py::test_redirect_302", "302", do
     let c ← mockClient redirects
-    let r ← c.post "https://example.org/redirect_302" (followRedirects := some true)
+    let r ← c.post "https://example.org/redirect_302" (followRedirects := true)
     allOk [eqv "status" r.statusCode 200, eqv "url" (toString r.url) "https://example.org/", eqv "hist" r.history.length 1]⟩,
   ⟨"tests/client/test_redirects.py::test_redirect_303", "303", do
     let c ← mockClient redirects
-    let r ← c.get "https://example.org/redirect_303" (followRedirects := some true)
+    let r ← c.get "https://example.org/redirect_303" (followRedirects := true)
     allOk [eqv "status" r.statusCode 200, eqv "url" (toString r.url) "https://example.org/", eqv "hist" r.history.length 1]⟩,
   ⟨"tests/client/test_redirects.py::test_next_request", "next_request", do
     let c ← mockClient redirects
@@ -707,70 +717,70 @@ def redirectCases : List Case := [
     allOk [eqv "status" r.statusCode 303, eqv "next" (toString next.url) "https://example.org/", eqv "status2" r2.statusCode 200]⟩,
   ⟨"tests/client/test_redirects.py::test_head_redirect", "head redirect", do
     let c ← mockClient redirects
-    let r ← c.head "https://example.org/redirect_302" (followRedirects := some true)
+    let r ← c.head "https://example.org/redirect_302" (followRedirects := true)
     allOk [eqv "status" r.statusCode 200, eqv "url" (toString r.url) "https://example.org/",
       eqv "method" r.request.method "HEAD", eqv "hist" r.history.length 1, eqv "text" r.text ""]⟩,
   ⟨"tests/client/test_redirects.py::test_relative_redirect", "relative redirect", do
     let c ← mockClient redirects
-    let r ← c.get "https://example.org/relative_redirect" (followRedirects := some true)
+    let r ← c.get "https://example.org/relative_redirect" (followRedirects := true)
     allOk [eqv "url" (toString r.url) "https://example.org/", eqv "hist" r.history.length 1]⟩,
   ⟨"tests/client/test_redirects.py::test_malformed_redirect", "malformed redirect", do
     let c ← mockClient redirects
-    let r ← c.get "http://example.org/malformed_redirect" (followRedirects := some true)
+    let r ← c.get "http://example.org/malformed_redirect" (followRedirects := true)
     allOk [eqv "url" (r.url == (← url! "https://example.org:443/")) true, eqv "hist" r.history.length 1]⟩,
   ⟨"tests/client/test_redirects.py::test_no_scheme_redirect", "no-scheme redirect", do
     let c ← mockClient redirects
-    let r ← c.get "https://example.org/no_scheme_redirect" (followRedirects := some true)
+    let r ← c.get "https://example.org/no_scheme_redirect" (followRedirects := true)
     allOk [eqv "url" (toString r.url) "https://example.org/", eqv "hist" r.history.length 1]⟩,
   ⟨"tests/client/test_redirects.py::test_fragment_redirect", "fragment kept", do
     let c ← mockClient redirects
-    let r ← c.get "https://example.org/relative_redirect#fragment" (followRedirects := some true)
+    let r ← c.get "https://example.org/relative_redirect#fragment" (followRedirects := true)
     eqv "url" (toString r.url) "https://example.org/#fragment"⟩,
   ⟨"tests/client/test_redirects.py::test_multiple_redirects", "multiple redirects", do
     let c ← mockClient redirects
-    let r ← c.get "https://example.org/multiple_redirects?count=20" (followRedirects := some true)
+    let r ← c.get "https://example.org/multiple_redirects?count=20" (followRedirects := true)
     allOk [eqv "url" (toString r.url) "https://example.org/multiple_redirects", eqv "hist" r.history.length 20,
       eqv "first" (toString r.history.head!.url) "https://example.org/multiple_redirects?count=20",
       eqv "second" (toString (r.history.getD 1 default).url) "https://example.org/multiple_redirects?count=19",
       eqv "h0" r.history.head!.history.length 0, eqv "h1" (r.history.getD 1 default).history.length 1]⟩,
   ⟨"tests/client/test_redirects.py::test_too_many_redirects", "too many redirects", do
     let c ← mockClient redirects
-    eqv "err" ((← failure (c.get "https://example.org/multiple_redirects?count=21" (followRedirects := some true))).startsWith
+    eqv "err" ((← failure (c.get "https://example.org/multiple_redirects?count=21" (followRedirects := true))).startsWith
       "TooManyRedirects") true⟩,
   ⟨"tests/client/test_redirects.py::test_redirect_loop", "redirect loop", do
     let c ← mockClient redirects
-    eqv "err" ((← failure (c.get "https://example.org/redirect_loop" (followRedirects := some true))).startsWith
+    eqv "err" ((← failure (c.get "https://example.org/redirect_loop" (followRedirects := true))).startsWith
       "TooManyRedirects") true⟩,
   ⟨"tests/client/test_redirects.py::test_cross_domain_redirect_with_auth_header", "cross-domain drops auth", do
     let c ← mockClient redirects
-    let r ← c.get "https://example.com/cross_domain" (headers := [("Authorization", "abc")]) (followRedirects := some true)
+    let r ← c.get "https://example.com/cross_domain" (headers := [("Authorization", "abc")]) (followRedirects := true)
     allOk [eqv "url" (toString r.url) "https://example.org/cross_domain_target",
       eqv "auth" ((field r "headers").contains "authorization") false]⟩,
   ⟨"tests/client/test_redirects.py::test_same_domain_redirect", "same domain keeps auth", do
     let c ← mockClient redirects
-    let r ← c.get "https://example.org/cross_domain" (headers := [("Authorization", "abc")]) (followRedirects := some true)
+    let r ← c.get "https://example.org/cross_domain" (headers := [("Authorization", "abc")]) (followRedirects := true)
     eqv "auth" ((field r "headers").contains "\"authorization\":\"abc\"") true⟩,
   ⟨"tests/client/test_redirects.py::test_body_redirect", "308 keeps body", do
     let c ← mockClient redirects
-    let r ← c.post "https://example.org/redirect_body" (content := some (Content.text "Example request body"))
-      (followRedirects := some true)
+    let r ← c.post "https://example.org/redirect_body" (content := "Example request body")
+      (followRedirects := true)
     allOk [eqv "url" (toString r.url) "https://example.org/redirect_body_target",
       eqv "body" (field r "body") "Example request body",
       eqv "cl" ((field r "headers").contains "\"content-length\":\"20\"") true]⟩,
   ⟨"tests/client/test_redirects.py::test_no_body_redirect", "303 drops body", do
     let c ← mockClient redirects
-    let r ← c.post "https://example.org/redirect_no_body" (content := some (Content.text "Example request body"))
-      (followRedirects := some true)
+    let r ← c.post "https://example.org/redirect_no_body" (content := "Example request body")
+      (followRedirects := true)
     allOk [eqv "body" (field r "body") "", eqv "cl" ((field r "headers").contains "content-length") false]⟩,
   ⟨"tests/client/test_redirects.py::test_cross_subdomain_redirect", "cross subdomain", do
     let c ← mockClient redirects
-    let r ← c.get "https://example.org/cross_subdomain" (followRedirects := some true)
+    let r ← c.get "https://example.org/cross_subdomain" (followRedirects := true)
     eqv "url" (toString r.url) "https://www.example.org/cross_subdomain"⟩,
   ⟨"tests/client/test_redirects.py::test_redirect_cookie_behavior", "redirect cookies", do
     let c ← mockClient (followRedirects := true) fun r =>
       if r.url.path == "/login" then Response.new 302 (headers := [("location", "/"), ("set-cookie", "session=eat_me")])
       else if r.url.path == "/logout" then Response.new 302 (headers := [("location", "/"), ("set-cookie", "session=null; max-age=0")])
-      else Response.new 200 (text := some (if (r.headers.get? "cookie").isSome then "Logged in" else "Not logged in"))
+      else Response.new 200 (text := if (r.headers.get? "cookie").isSome then "Logged in" else "Not logged in")
     let r1 ← c.get "https://example.com/"
     let r2 ← c.get "https://example.com/login"
     let r3 ← c.get "https://example.com/"
@@ -794,7 +804,7 @@ def rfcChallenge (alg : String) : DigestChallenge :=
 def authCases : List Case := [
   ⟨"tests/client/test_auth.py::test_basic_auth", "basic auth", do
     let c ← mockClient echo
-    let r ← c.get "https://example.org/" (auth := some ("user", "password123"))
+    let r ← c.get "https://example.org/" (auth := ("user", "password123"))
     eqv "auth" ((field r "headers").contains "\"authorization\":\"Basic dXNlcjpwYXNzd29yZDEyMw==\"") true⟩,
   ⟨"tests/client/test_auth.py::test_basic_auth_with_stream", "basic auth header", do
     eqv "h" (basicAuthHeader "user" "password123") "Basic dXNlcjpwYXNzd29yZDEyMw=="⟩,
@@ -803,18 +813,18 @@ def authCases : List Case := [
     let r ← c.get "https://user:password123@example.org/"
     eqv "auth" ((field r "headers").contains "\"authorization\":\"Basic dXNlcjpwYXNzd29yZDEyMw==\"") true⟩,
   ⟨"tests/client/test_auth.py::test_basic_auth_on_session", "basic auth on client", do
-    let c ← Client.new (auth := some ("user", "password123")) (transport := MockTransport echo)
+    let c ← Client.new (auth := ("user", "password123")) (transport := MockTransport echo)
     let r ← c.get "https://example.org/"
     eqv "auth" ((field r "headers").contains "Basic dXNlcjpwYXNzd29yZDEyMw==") true⟩,
   ⟨"tests/client/test_auth.py::test_custom_auth", "custom auth", do
     let c ← mockClient echo
     let auth : Auth := FunctionAuth fun r => { r with headers := r.headers.set "Authorization" "Token 123" }
-    let r ← c.get "https://example.org/" (auth := some auth)
+    let r ← c.get "https://example.org/" (auth := auth)
     eqv "auth" ((field r "headers").contains "\"authorization\":\"Token 123\"") true⟩,
   ⟨"tests/client/test_auth.py::test_digest_auth_returns_no_auth_if_no_digest_header_in_response", "digest without challenge", do
     let auth ← DigestAuth "user" "password123"
     let c ← mockClient echo
-    let r ← c.get "https://example.org/" (auth := some auth)
+    let r ← c.get "https://example.org/" (auth := auth)
     allOk [eqv "status" r.statusCode 200, eqv "auth" ((field r "headers").contains "authorization") false,
       eqv "hist" r.history.length 0]⟩,
   ⟨"tests/client/test_auth.py::test_digest_auth", "digest auth", do
@@ -823,7 +833,7 @@ def authCases : List Case := [
       if r.headers.contains "authorization" then echo r
       else Response.new 401 (headers := [("www-authenticate",
         "Digest realm=\"httpx@example.org\", qop=\"auth\", nonce=\"ee96edced2a0b43e4869e96ebe27563f369c1205a049d06419bb51d8aeddf3d3\", opaque=\"ee6378f3ee14ebfd2fff54b70a91a7c9390518047f242ab2271380db0e14bda1\", algorithm=MD5")])
-    let r ← c.get "https://example.org/" (auth := some auth)
+    let r ← c.get "https://example.org/" (auth := auth)
     let h := field r "headers"
     allOk [eqv "status" r.statusCode 200, eqv "hist" r.history.length 1,
       eqv "digest" (h.contains "\"authorization\":\"Digest username=\\\"user\\\", realm=\\\"httpx@example.org\\\"") true,
@@ -879,7 +889,7 @@ def asgiCases : List Case := [
     eqv "body" r.text "{\"path\":\"/user@example.org\",\"raw_path\":\"/user@example.org\"}"⟩,
   ⟨"tests/test_asgi.py::test_asgi_upload", "asgi upload", do
     let c ← Client.new (transport := ASGITransport.mk echoBodyApp true "" ("127.0.0.1", 123))
-    let r ← c.post "http://www.example.org/" (content := some (Content.text "example"))
+    let r ← c.post "http://www.example.org/" (content := "example")
     allOk [eqv "status" r.statusCode 200, eqv "text" r.text "example"]⟩,
   ⟨"tests/test_asgi.py::test_asgi_exc", "asgi exception", do
     let c ← Client.new (transport := ASGITransport.mk raisingApp true "" ("127.0.0.1", 123))

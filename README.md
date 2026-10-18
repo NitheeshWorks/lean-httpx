@@ -45,16 +45,16 @@ A client, as in httpx's docs (`docs/advanced/clients.md`, `docs/advanced/transpo
 
 ```lean
 def handler (request : Request) : Response :=
-  Response.new 200 (json := some (json% {"text": "Hello, world!"}))
+  Response.new 200 (json := json% {"text": "Hello, world!"})
 
 def demo : IO Unit := do
   let client ← Client.new (transport := MockTransport handler) (headers := [("X-Auth", "from-client")])
   let r ← client.get "https://example.org/" (params := [("q", "search")])
   let data ← r.json                   -- {"text": "Hello, world!"}
-  let r ← client.post "https://example.org/" (json := some (json% {"key": "value"}))
+  let r ← client.post "https://example.org/" (json := json% {"key": "value"})
   let r ← r.raiseForStatus
-  let r ← client.get "https://example.org/old" (followRedirects := some true)
-  let r ← client.get "https://example.org/" (auth := some ("user", "pass"))
+  let r ← client.get "https://example.org/old" (followRedirects := true)
+  let r ← client.get "https://example.org/" (auth := ("user", "pass"))
   pure ()
 ```
 
@@ -62,7 +62,7 @@ def demo : IO Unit := do
 |---|---|
 | `httpx.get(url, params=..., headers=...)` | `LeanHttpx.get url (params := …) (headers := …)` |
 | `httpx.Client(base_url=..., follow_redirects=True)` | `Client.new (baseUrl := …) (followRedirects := true)` |
-| `client.post(url, json=..., data=..., content=...)` | `client.post url (json := some …) (data := …) (content := some …)` |
+| `client.post(url, json=..., data=..., content=...)` | `client.post url (json := …) (data := …) (content := …)` |
 | `response.status_code`, `.text`, `.json()`, `.raise_for_status()` | `r.statusCode`, `r.text`, `r.json`, `r.raiseForStatus` |
 | `httpx.URL(s)`, `url.join(r)`, `url.copy_with(...)` | `URL.parse s`, `u.join r`, `u.copyWith …` |
 | `httpx.Headers`, `httpx.QueryParams`, `httpx.Cookies` | `Headers`, `QueryParams`, `Cookies` |
@@ -104,8 +104,11 @@ Every theorem below is checked by Lean with no axioms beyond `propext`, `Quot.so
   message parses back from its bytes on any continuation:
   `parseResponse m (printResponse m r ++ rest) = some (r, rest)`. The codecs are built from
   `Keel.Codec` combinators, so the law is the combinators' law.
+* **The transport decodes with the codec** (`readResponse_eq_parseResponse`): the reader
+  `HTTPTransport` uses, which copies a `Content-Length` body as one slice, is
+  `parseResponse`.
 * **Chunked coding** (`chunked_decode_encode`): `decodeChunked (encodeChunked cs ++ rest) =
-  some (cs, rest)` for non-empty chunks.
+  some (cs, rest)` for non-empty chunks below 2^80 bytes (h11's 20 hex digits).
 * **Header precedence** (`headers_merge_precedence`): after merging, a name has the
   request's values if it has any, else the client's.
 * **Cookie matching** (`cookie_match_domain_path`): a request carries exactly the stored
@@ -116,12 +119,14 @@ Every theorem below is checked by Lean with no axioms beyond `propext`, `Quot.so
   301 `POST` becomes `GET`, everything else keeps its method; 307/308 keep the body.
 * **Redirect bound** (`redirect_bounded`): a response's redirect history has at most
   `max_redirects` entries (its type), and a server that always redirects ends in
-  `TooManyRedirects`.
+  `TooManyRedirects`; such a server exists (`redirect_bounded_satisfiable`).
 * **Basic credentials** (`basic_auth_header`): `parseBasicAuth (basicAuthHeader u p) =
   some (u, p)` when the user-id has no colon; from `Base64.decode_encode`.
 
 Tested rather than proved: Digest auth and the hash functions (RFC vectors), inflate,
-`Set-Cookie` parsing, query strings. See [CONTRIBUTING.md](CONTRIBUTING.md#tested-not-proved).
+`Set-Cookie` parsing, query strings, the chunked fast path, and `HTTPTransport` itself
+against a hostile server (head limit 100 KiB, framing, error classes, numbers bounded before
+conversion, a 200 MiB body within twice upstream's time and memory). See [CONTRIBUTING.md](CONTRIBUTING.md#tested-not-proved).
 
 ## Getting started
 
@@ -129,6 +134,7 @@ Tested rather than proved: Digest auth and the hash functions (RFC vectors), inf
 lake build            # library, proofs, and both test executables
 lake exe props        # property tests (seeded; `lake exe props 42`)
 lake exe conformance  # cases re-expressed from the upstream test suites
+scripts/bench.sh      # HTTPTransport against a hostile local server, and the benchmark
 scripts/check.sh      # the whole CI gate, locally
 ```
 

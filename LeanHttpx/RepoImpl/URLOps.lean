@@ -95,7 +95,7 @@ def copyWith (scheme : String := u.ref.scheme) (username : Option String := none
   let (host, port) := match netloc with
     | some n => match n.splitOn ":" with
       | [h] => (h, none)
-      | h :: p :: _ => (h, p.toNat?)
+      | h :: p :: _ => (h, if p.length > maxIntDigits then none else p.toNat?)
       | [] => (host, port)
     | none => (host, port)
   let (path, query) := match rawPath with

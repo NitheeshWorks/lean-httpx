@@ -20,9 +20,14 @@ def ResponseParsePrint : Prop :=
   ∀ (m : List UInt8) (r : H1.Response) (rest : ByteArray), r.ok m = true →
     parseResponse m (printResponse m r ++ rest) = some (r, rest)
 
-/-- Non-empty chunks decode back from their chunked coding. -/
+/-- The transport's reader is the response codec. -/
+def ReaderIsCodec : Prop :=
+  ∀ (m : List UInt8) (b : ByteArray), H1.readResponse m b = parseResponse m b
+
+/-- Non-empty chunks (below `maxChunkSize`, 2^80 bytes) decode back from
+their chunked coding. -/
 def ChunkedDecodeEncode : Prop :=
-  ∀ (cs : List ByteArray) (rest : ByteArray), (∀ c ∈ cs, 0 < c.size) →
+  ∀ (cs : List ByteArray) (rest : ByteArray), (∀ c ∈ cs, 0 < c.size ∧ c.size < H1.maxChunkSize) →
     decodeChunked (encodeChunked cs ++ rest) = some (cs, rest)
 
 end LeanHttpx.Spec

@@ -57,6 +57,33 @@ def Rng.bytes (r : Rng) (maxLen : Nat) : ByteArray × Rng := Id.run do
     out := out.push b.toUInt8
   return (out, r)
 
+/-- A random chunked body, sometimes damaged: chunks of random sizes with
+upper- or lower-case hex, optional extensions, optional trailers, then
+(sometimes) one byte overwritten, or the end cut off. -/
+def Rng.chunked (r : Rng) : ByteArray × Rng := Id.run do
+  let (n, r) := r.nat 4
+  let mut r := r
+  let mut out := ByteArray.empty
+  for _ in [0:n] do
+    let (d, r1) := r.bytes 20
+    let (upper, r2) := r1.nat 2
+    let (ext, r3) := r2.nat 3
+    r := r3
+    let d := d.push 13
+    let hex := String.ofList (Nat.toDigits 16 d.size)
+    let hex := if upper == 1 then hex.toUpper else hex
+    out := out ++ s!"{hex}{if ext == 0 then ";a=b" else ""}\r\n".toUTF8 ++ d ++ "\r\n".toUTF8
+  let (tr, r4) := r.nat 3
+  out := out ++ (if tr == 0 then "0\r\nX-T: v\r\n\r\n" else "0\r\n\r\n").toUTF8
+  let (damage, r5) := r4.nat 4
+  let (pos, r6) := r5.nat (out.size + 1)
+  let (byte, r7) := r6.nat 256
+  r := r7
+  if damage == 0 && pos < out.size then out := out.set! pos byte.toUInt8
+  if damage == 1 then out := out.extract 0 pos
+  let (tail, r8) := r.bytes 4
+  return (out ++ tail, r8)
+
 /-- Characters URLs are made of, including the awkward ones. -/
 def urlChars : List Char :=
   "abcXYZ019:/?#[]@!$&'()*+,;=%-._~ \"<>\\^`{|}é☃\t".toList
@@ -139,6 +166,26 @@ def properties : List Property := [
     match H1.decodeChunked (H1.encodeChunked cs) with
     | some (cs', _) => (if H1.concatChunks cs' == body then none else some s!"{body.toList}", r)
     | none => (some "none", r)⟩,
+  ⟨"H1.readChunked (slices) agrees with the chunked codec on damaged and intact bodies", fun r =>
+    let (b, r) := r.chunked
+    let fast := H1.readChunked b 0
+    let slow := (H1.chunkedBody.decodeBytes b).map fun (d, rest) => (d, b.size - rest.size)
+    (if fast == slow then none else s!"{b.toList}: {fast.map (·.2)} vs {slow.map (·.2)}", r)⟩,
+  ⟨"H1.scanChunks stops where the chunked codec ends, and never early", fun r =>
+    let (b, r) := r.chunked
+    match H1.readChunked b 0, H1.scanChunks b 0 with
+    | some (_, k), .done k' => (if k == k' then none else some s!"{b.toList}: {k} vs {k'}", r)
+    | some _, s => (some s!"{b.toList}: codec ends, scan says {repr s}", r)
+    | none, .done k =>
+      -- the scan only finds the end; a damaged body is then refused by the codec
+      (if (H1.readChunked (b.extract 0 k) 0).isNone then none else some s!"{b.toList}: scan {k}", r)
+    | none, _ => (none, r)⟩,
+  ⟨"an httpx error raised in IO reads back as the same class and message", fun r =>
+    let (m, r) := r.string "ab: :x".toList 8
+    let es := [HTTPError.readTimeout m, .remoteProtocolError m, .connectError m, .writeError m,
+      .localProtocolError m, .unsupportedProtocol m, .decodingError m, .readError m]
+    let bad := es.filter fun e => (HTTPError.ofString? (toString e)).map toString != some (toString e)
+    (if bad.isEmpty then none else some s!"{bad.map toString}", r)⟩,
   ⟨"response round trip on ByteArray (theorem h1_response_parse_print_ext)", fun r =>
     let (body, r) := r.bytes 30
     let (code, r) := r.nat 500

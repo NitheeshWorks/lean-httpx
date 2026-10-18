@@ -111,6 +111,13 @@ def daysFromCivil (y : Int) (m d : Nat) : Int :=
   let doe := yoe * 365 + yoe / 4 - yoe / 100 + doy
   era * 146097 + doe - 719468
 
+/-- A decimal number from input, refused past `maxIntDigits` digits (as
+Python's `int()`) before any conversion. -/
+def natOf? (s : String) : Option Nat := if s.length > maxIntDigits then none else s.toNat?
+
+/-- `int(s)` for a signed decimal, with the same bound. -/
+def intOf? (s : String) : Option Int := if s.length > maxIntDigits then none else s.toInt?
+
 /-- The three-letter month names. -/
 def months : List String := ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
 
@@ -119,7 +126,7 @@ def monthOf (s : String) : Option Nat :=
   let l := asciiLower s
   match months.findIdx? (fun m => l == m || (l.length > 3 && l.startsWith m)) with
   | some i => some (i + 1)
-  | none => match s.toNat? with
+  | none => match natOf? s with
     | some n => if 1 ≤ n && n ≤ 12 then some n else none
     | none => none
 
@@ -136,9 +143,9 @@ def httpToTime (text : String) (currentYear : Int) : Option Int := do
     | [] => []
   match parts with
   | day :: mon :: yr :: rest =>
-    let d ← day.toNat?
+    let d ← natOf? day
     let m ← monthOf mon
-    let y ← yr.toNat?
+    let y ← natOf? yr
     let y : Int := if yr.length ≤ 2 then
         let m100 := currentYear % 100
         let y0 := (y : Int) + currentYear - m100
@@ -148,12 +155,12 @@ def httpToTime (text : String) (currentYear : Int) : Option Int := do
     let (hh, mm, ss, tz) ← match rest with
       | [] => some (0, 0, 0, "UTC")
       | [clock] => (match clock.splitOn ":" with
-          | [h, mi] => do pure (← h.toNat?, ← mi.toNat?, 0, "UTC")
-          | [h, mi, s] => do pure (← h.toNat?, ← mi.toNat?, ← s.toNat?, "UTC")
+          | [h, mi] => do pure (← natOf? h, ← natOf? mi, 0, "UTC")
+          | [h, mi, s] => do pure (← natOf? h, ← natOf? mi, ← natOf? s, "UTC")
           | _ => none)
       | [clock, tz] => (match clock.splitOn ":" with
-          | [h, mi] => do pure (← h.toNat?, ← mi.toNat?, 0, tz)
-          | [h, mi, s] => do pure (← h.toNat?, ← mi.toNat?, ← s.toNat?, tz)
+          | [h, mi] => do pure (← natOf? h, ← natOf? mi, 0, tz)
+          | [h, mi, s] => do pure (← natOf? h, ← natOf? mi, ← natOf? s, tz)
           | _ => none)
       | _ => none
     if !(y ≥ 1970 && 1 ≤ d && d ≤ 31 && hh ≤ 24 && mm ≤ 59 && ss ≤ 61) then none else
@@ -211,7 +218,7 @@ def parseSetCookie (header : String) (url : URL) (now currentYear : Int) : Optio
   if domainAttr == some none then none
   let maxAge := first "max-age"
   let expires : Option Int ← match maxAge with
-    | some (some v) => match v.toInt? with
+    | some (some v) => match intOf? v with
       | some n => pure (some (now + n))
       | none => none
     | some none => none

@@ -131,11 +131,16 @@ def read (r : Response) : Except HTTPError Response :=
     | .error e => .error (.decodingError s!"Error -3 while decompressing data: {e}")
 
 /-- Send one request, without redirects (`_send_single_request`): request
-hooks, the transport, response hooks, the cookie jar, and reading. -/
+hooks, the transport, response hooks, the cookie jar, and reading. An httpx
+error the transport raises keeps its class (`ReadTimeout`,
+`RemoteProtocolError`, ...); any other exception propagates unchanged, as
+in Python. -/
 def sendSingle (request : Request) : IO (Except HTTPError Response) := do
   for hook in c.eventHooks.request do hook request
   let response ← try c.transport.handleRequest request
-    catch e => return .error (.connectError (toString e))
+    catch e => match HTTPError.ofString? (toString e) with
+      | some err => return .error err
+      | none => throw e
   let response := { response with request? := some request, defaultEncoding := c.defaultEncoding }
   for hook in c.eventHooks.response do hook response
   let (now, year) ← clock

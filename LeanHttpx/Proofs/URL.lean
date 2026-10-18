@@ -151,7 +151,8 @@ theorem encodeHost_printHost {h : List Char} (hc : hostCanonical h = true) :
       simp [List.isEmpty_iff, hne, h4, hnb, hascii, hq]
 
 theorem normalizePort_portText {port : Option Nat} {scheme : List Char}
-    (h : (port.isNone || port != defaultPort scheme) = true) :
+    (h : ((port.isNone || port != defaultPort scheme) &&
+      port.all fun n => (Keel.Codec.decimal n).length ≤ maxIntDigits) = true) :
     normalizePort (portText port) scheme = .ok port := by
   cases port with
   | none => rfl
@@ -159,10 +160,12 @@ theorem normalizePort_portText {port : Option Nat} {scheme : List Char}
     have hd : (decimal n).all Char.isDigit = true := List.all_eq_true.mpr (decimal_mem n)
     have hne : (decimal n).isEmpty = false := by
       simpa [List.isEmpty_iff] using Keel.Codec.decimal_ne_nil n
-    simp only [Option.isNone_some, Bool.false_or, bne_iff_ne, ne_eq] at h
-    simp only [normalizePort, portText, hne, Bool.false_eq_true, ite_false, hd, ite_true,
+    simp only [Option.isNone_some, Bool.false_or, bne_iff_ne, ne_eq, Bool.and_eq_true,
+      Option.all_some, decide_eq_true_eq] at h
+    have hl : (decimal n).length ≤ maxIntDigits := h.2
+    simp only [normalizePort, portText, hne, hl, decide_true, Bool.and_true, Bool.false_eq_true, ite_false, hd, ite_true,
       digitsValue, Keel.Codec.digitsValue_decimal]
-    simp [h]
+    simp [h.1]
 
 theorem normalizePath_of_noDots {p : List Char} (h : noDotSegments p = true) : normalizePath p = p := by
   unfold normalizePath; simp [h]

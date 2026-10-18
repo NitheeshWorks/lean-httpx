@@ -110,6 +110,13 @@ def hexVal (b : UInt8) : Nat :=
 def hexDigits (n : Nat) : List UInt8 :=
   if n < 16 then [hexByte n] else hexDigits (n / 16) ++ [hexByte (n % 16)]
 
+/-- The most hex digits of a chunk size: h11's `chunk_size = HEXDIG{1,20}`.
+The size is converted only after this check, so the work is bounded. -/
+def maxChunkDigits : Nat := 20
+
+/-- The chunk sizes that fit: below `16 ^ maxChunkDigits` (2^80 bytes). -/
+def maxChunkSize : Nat := 16 ^ maxChunkDigits
+
 /-- The value of hex digit bytes. -/
 def hexValue (l : List UInt8) : Nat := l.foldl (fun acc b => acc * 16 + hexVal b) 0
 
@@ -143,6 +150,17 @@ theorem hexValue_hexDigits (n : Nat) : hexValue (hexDigits n) = n := by
       simp only at h2
       rw [this, h2]
       omega
+
+theorem hexDigits_length_le (k : Nat) : ∀ n, n < 16 ^ (k + 1) → (hexDigits n).length ≤ k + 1 := by
+  induction k with
+  | zero => intro n h; unfold hexDigits; rw [if_pos (by simpa using h)]; simp
+  | succ k ih =>
+    intro n h
+    unfold hexDigits
+    split
+    · simp
+    · have := ih (n / 16) (by rw [Nat.pow_succ] at h; omega)
+      simp; omega
 
 /-! ## Field lines -/
 
@@ -259,13 +277,15 @@ def valuesOf (fs : List Field) (name : List UInt8) : List (List UInt8) :=
 
 /-- RFC 9112 section 6.3, as h11 applies it: `Transfer-Encoding` wins and
 must be exactly `chunked`; otherwise every `Content-Length` must be the same
-digits; otherwise there is no explicit framing. -/
+digits, at most `maxIntDigits` of them (h11's `int()`), checked before they
+are converted; otherwise there is no explicit framing. -/
 def framingOf (fs : List Field) : Framing :=
   match valuesOf fs (ascii "transfer-encoding") with
   | [] =>
     match valuesOf fs (ascii "content-length") with
     | [] => .none
-    | v :: vs => if isDigits v && vs.all (· == v) then .length (decimalValue v) else .invalid
+    | v :: vs =>
+      if isDigits v && v.length ≤ maxIntDigits && vs.all (· == v) then .length (decimalValue v) else .invalid
   | [te] => if lowerBytes te == ascii "chunked" then .chunked else .invalid
   | _ => .invalid
 
@@ -282,11 +302,11 @@ def responseFraming (requestMethod : List UInt8) (h : ResponseHead) : Framing :=
 
 /-! ## Chunked transfer coding -/
 
-/-- `chunk-size [chunk-ext] CRLF`: hex digits, an optional extension
+/-- `chunk-size [chunk-ext] CRLF`: one to `maxChunkDigits` hex digits, an optional extension
 (ignored; it must start with `;` or whitespace), `CRLF`. -/
 def chunkSizeLine {ε : Type} [ParseError ε] : Parser UInt8 ε Nat := do
   let ds ← takeWhile isHexByte
-  if ds.isEmpty then Parser.fail ParseError.unexpected else
+  if ds.isEmpty || ds.length > maxChunkDigits then Parser.fail ParseError.unexpected else
   let ext ← takeWhile (· != CR)
   if ext.isEmpty || ext.head? == some 59 || (ext.head?.map isOWS).getD false then
     Parser.lit crlf

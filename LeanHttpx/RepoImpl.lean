@@ -6,6 +6,7 @@ import LeanHttpx.RepoImpl.Cookies
 import LeanHttpx.RepoImpl.Decoders
 import LeanHttpx.RepoImpl.H1
 import LeanHttpx.RepoImpl.H1Body
+import LeanHttpx.RepoImpl.H1Stream
 import LeanHttpx.RepoImpl.Hash
 import LeanHttpx.RepoImpl.Headers
 import LeanHttpx.RepoImpl.Lists

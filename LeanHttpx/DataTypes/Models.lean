@@ -144,6 +144,33 @@ def message : HTTPError → String
 
 instance : ToString HTTPError := ⟨fun e => s!"{e.name}: {e.message}"⟩
 
+/-- The errors that carry only a message, by class name. -/
+def ofName? (name message : String) : Option HTTPError :=
+  match name with
+  | "InvalidURL" => some (.invalidURL message)
+  | "RemoteProtocolError" => some (.remoteProtocolError message)
+  | "LocalProtocolError" => some (.localProtocolError message)
+  | "ConnectError" => some (.connectError message)
+  | "ReadError" => some (.readError message)
+  | "WriteError" => some (.writeError message)
+  | "ConnectTimeout" => some (.connectTimeout message)
+  | "ReadTimeout" => some (.readTimeout message)
+  | "WriteTimeout" => some (.writeTimeout message)
+  | "PoolTimeout" => some (.poolTimeout message)
+  | "UnsupportedProtocol" => some (.unsupportedProtocol message)
+  | "DecodingError" => some (.decodingError message)
+  | "CookieConflict" => some (.cookieConflict message)
+  | "StreamError" => some (.streamError message)
+  | _ => none
+
+/-- The httpx error an `IO` error stands for, when it is one raised as
+`"Name: message"` (the `MonadLift` below): a transport raises its errors
+this way, and the client keeps their class. -/
+def ofString? (s : String) : Option HTTPError :=
+  match s.splitOn ": " with
+  | name :: rest@(_ :: _) => ofName? name (": ".intercalate rest)
+  | _ => none
+
 /-- `HTTPError` is the base of the transport and status errors. -/
 def isTransportError : HTTPError → Bool
   | .connectError .. | .readError .. | .writeError .. | .connectTimeout .. | .readTimeout ..

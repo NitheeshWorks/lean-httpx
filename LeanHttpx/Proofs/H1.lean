@@ -78,7 +78,7 @@ theorem bodyCodec_valid (fr : Framing) (b : ByteArray) (h : bodyFits fr b = true
     simp only [toChunks] at hc
     split at hc
     · cases hc
-    · simp at hc; subst hc; omega
+    · simp at hc; subst hc; simp [bodyFits] at h; omega
   | close => simp [bodyFits] at h
   | invalid => simp [bodyFits] at h
 
@@ -171,11 +171,76 @@ theorem h1_response_parse_print_ext (m : List UInt8) (r : Response) (h : r.ok m 
   Codec.decodeBytes_encodeBytes _ (response_valid m r h) (response_follow m _)
 
 /-- **Chunked round trip** (card: `chunked_decode_encode`). Non-empty
-chunks, chunk-encoded, decode back to the same chunks, leaving what follows
+chunks below `maxChunkSize` (2^80 bytes, h11's 20 hex digits), chunk-encoded, decode back to the same chunks, leaving what follows
 the last chunk. -/
-theorem chunked_decode_encode (cs : List ByteArray) (h : ∀ c ∈ cs, 0 < c.size) (rest : ByteArray) :
+theorem chunked_decode_encode (cs : List ByteArray) (h : ∀ c ∈ cs, 0 < c.size ∧ c.size < maxChunkSize)
+    (rest : ByteArray) :
     decodeChunked (encodeChunked cs ++ rest) = some (cs, rest) :=
   Codec.decodeBytes_encodeBytes _ h trivial
+
+end H1
+
+end LeanHttpx
+
+namespace LeanHttpx
+
+namespace H1
+
+open Keel
+
+/-- `n` bytes read one by one from position `j` are the slice from `j`. -/
+theorem buildBytes_eq_extract (b : ByteArray) (j n : Nat) (h : j + n ≤ b.size) :
+    buildBytes (fun k => (Input.get? b (j + k)).getD 0) n = b.extract j (j + n) := by
+  apply ByteArray.ext
+  apply Array.ext
+  · simp [buildBytes, ByteArray.size_data]; omega
+  · intro i h1 _
+    simp only [buildBytes, Array.getElem_ofFn]
+    show ((b[j + i]?).getD 0) = _
+    simp only [buildBytes, Array.size_ofFn] at h1
+    have hi : j + i < b.size := by omega
+    rw [getElem?_pos b (j + i) hi, Option.getD_some]
+    simp [ByteArray.data_extract, ByteArray.getElem_eq_getElem_data]
+
+/-- **The transport's reader is the response codec**: reading a body of
+`Content-Length` bytes as one slice changes nothing. -/
+theorem run_pos_le {α : Type} (p : Parser UInt8 Unit α) (b : ByteArray) {a : α} {j : Nat}
+    (h : p.run b 0 = .ok a j) : j ≤ b.size := by
+  have hl := p.pos_le (Input.rest b 0)
+  rw [p.run_eq b 0] at h
+  cases hr : p.run (Input.rest b 0) 0 with
+  | ok a' j' =>
+    rw [hr] at h hl
+    simp only [Result.shift_ok, Nat.add_zero, Result.ok.injEq] at h
+    simp only [Result.pos_ok, Input.length_rest, Nat.sub_zero] at hl
+    have : Input.size b = b.size := rfl
+    omega
+  | error e j' => rw [hr] at h; cases h
+
+theorem readResponse_eq_parseResponse (m : List UInt8) (b : ByteArray) :
+    readResponse m b = parseResponse m b := by
+  unfold readResponse parseResponse Codec.decodeBytes
+  simp only [response, Codec.map, Codec.sigma]
+  simp only [Functor.map, bind, Parser.bind, pure, Parser.pure]
+  split
+  · rename_i h j hrun
+    rw [hrun]
+    simp only
+    cases hf : responseFraming m h with
+    | length n =>
+      simp only [bodyCodec, Codec.bytesN, takeBytes]
+      have hs : Input.size b = b.size := rfl
+      have hj := run_pos_le _ b hrun
+      rw [hs]
+      by_cases hn : b.size - j < n
+      · simp [hn]
+      · simp only [hn, ite_false, Function.comp, Parser.pure]
+        rw [buildBytes_eq_extract b j n (by omega)]
+    | _ =>
+      simp only
+      split <;> simp_all [Function.comp, Parser.pure]
+  · rename_i heq
+    rw [heq]
 
 end H1
 

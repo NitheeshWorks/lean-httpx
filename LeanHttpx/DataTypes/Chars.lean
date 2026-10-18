@@ -13,6 +13,13 @@ same as encoding character by character, which is how it is defined.
 
 namespace LeanHttpx
 
+/-- The most digits a number read from input may have: Python's limit for
+`int(str)` (`sys.get_int_max_str_digits()`, 4300), which bounds every
+upstream conversion. Converting `n` digits costs time quadratic in `n`, so
+every numeric field of network input is checked against this before it is
+converted. -/
+def maxIntDigits : Nat := 4300
+
 namespace Chars
 
 /-- ASCII letters and digits. -/
