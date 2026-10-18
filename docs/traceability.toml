@@ -16,11 +16,363 @@ upstream_url = "https://github.com/encode/httpx"
 upstream_commit = "b5addb64f0161ff6bfe94c124ef76f6a1fba5254"
 upstream_license = "BSD-3-Clause"
 
-# [[requirement]]
-# id = "..."                  # stable id, e.g. "routing.first-match"
-# upstream = "tests/test_x.py::test_y"   # or a docs section
-# title = "..."
-# status = "implemented"
-# realises = ["LeanHttpx.Foo.bar"]
-# theorem = ["LeanHttpx.Foo.bar_spec"]
-# test = ["tests/Conformance.lean::name"]
+[[requirement]]
+id = "url.parse"
+upstream = "tests/models/test_url.py::test_complete_url"
+title = "URL parsing and normalisation (scheme, userinfo, host, port, path, query, fragment)"
+status = "implemented"
+realises = ["LeanHttpx.URL.parse", "LeanHttpx.URLParse.build", "LeanHttpx.URLParse.splitUrl", "LeanHttpx.URLParse.splitAuth"]
+theorem = ["LeanHttpx.url_parse_print_ext", "LeanHttpx.URLParse.splitUrl_printRaw", "LeanHttpx.URLParse.splitAuth_printAuth"]
+test = ["tests/Conformance.lean::complete url", "tests/Props.lean::URL.parse never reaches its internal canonical-form check"]
+
+[[requirement]]
+id = "url.roundtrip"
+upstream = "tests/models/test_url.py::test_url_eq_str"
+title = "str(URL(s)) re-parses to the same URL"
+status = "implemented"
+realises = ["LeanHttpx.URL.toString"]
+theorem = ["LeanHttpx.url_parse_print_ext"]
+test = ["tests/Conformance.lean::url equality", "tests/Props.lean::URL.parse (toString (URL.parse s)) is URL.parse s (theorem url_parse_print_ext, on text)"]
+
+[[requirement]]
+id = "url.host-escape-case"
+upstream = "tests/models/test_url.py::test_url_percent_escape_host"
+title = "Host percent-escapes keep their case (upstream lower-cases them on re-parse, UP-035)"
+status = "deviation"
+realises = ["LeanHttpx.URLParse.lowerHost"]
+theorem = ["LeanHttpx.url_parse_print_ext"]
+test = ["tests/Conformance.lean::percent escape host"]
+
+[[requirement]]
+id = "url.no-authority-slashes"
+upstream = "RFC 3986 section 3.3"
+title = "A path starting with '//' without an authority is InvalidURL (upstream prints it as an authority, UP-036)"
+status = "deviation"
+realises = ["LeanHttpx.URLParse.build"]
+test = ["tests/Conformance.lean::invalid path components"]
+
+[[requirement]]
+id = "url.relative-scheme-like"
+upstream = "RFC 3986 section 4.2"
+title = "A relative path whose first segment reads as a scheme is InvalidURL (UP-037)"
+status = "deviation"
+realises = ["LeanHttpx.URLParse.schemeOf"]
+test = ["tests/Conformance.lean::invalid path components"]
+
+[[requirement]]
+id = "url.port-digits"
+upstream = "tests/models/test_url.py::test_url_invalid_port"
+title = "Ports are ASCII digits only (upstream int() accepts signs, spaces, underscores, UP-038)"
+status = "deviation"
+realises = ["LeanHttpx.URLParse.normalizePort"]
+theorem = ["LeanHttpx.URLParse.normalizePort_portText"]
+test = ["tests/Conformance.lean::invalid port"]
+
+[[requirement]]
+id = "url.default-port-case"
+upstream = "tests/models/test_url.py::test_url_normalized_port"
+title = "The default port is compared against the lower-cased scheme (UP-039)"
+status = "deviation"
+realises = ["LeanHttpx.URLParse.defaultPort"]
+test = ["tests/Conformance.lean::normalized port"]
+
+[[requirement]]
+id = "url.idna"
+upstream = "tests/models/test_url.py::test_idna_url"
+title = "IDNA (non-ASCII) host names"
+status = "excluded"
+realises = ["LeanHttpx.URLParse.encodeHost"]
+test = ["tests/Conformance.lean::invalid hostname"]
+
+[[requirement]]
+id = "url.ipv6-zone"
+upstream = "tests/models/test_url.py::test_ipv6_url"
+title = "IPv6 literals; zone index limited to unreserved characters"
+status = "deviation"
+realises = ["LeanHttpx.URLParse.validIPv6"]
+test = ["tests/Conformance.lean::ipv6 url", "tests/Conformance.lean::invalid ipv6"]
+
+[[requirement]]
+id = "url.join"
+upstream = "tests/models/test_url.py::test_url_join_rfc3986"
+title = "URL.join resolves references by RFC 3986 section 5.2 (empty segments kept, UP-040)"
+status = "implemented"
+realises = ["LeanHttpx.URL.join", "LeanHttpx.URL.resolvePath"]
+theorem = ["LeanHttpx.url_join_rfc3986"]
+test = ["tests/Conformance.lean::join rfc3986", "tests/Props.lean::join gives a URL that parses back"]
+
+[[requirement]]
+id = "url.copy-with"
+upstream = "tests/models/test_url.py::test_copy_with"
+title = "copy_with and copy_*_param"
+status = "implemented"
+realises = ["LeanHttpx.URL.copyWith", "LeanHttpx.URL.copySetParam", "LeanHttpx.URL.copyMergeParams"]
+test = ["tests/Conformance.lean::copy_with", "tests/Conformance.lean::copy_merge_params"]
+
+[[requirement]]
+id = "queryparams"
+upstream = "tests/models/test_queryparams.py::test_queryparams"
+title = "QueryParams multi-dict, parse_qs and urlencode"
+status = "tested"
+realises = ["LeanHttpx.QueryParams.parse", "LeanHttpx.QueryParams.toString"]
+test = ["tests/Conformance.lean::queryparams", "tests/Props.lean::QueryParams.parse (toString q) has the same items"]
+
+[[requirement]]
+id = "request.params-replace-query"
+upstream = "tests/models/test_requests.py::test_request_params"
+title = "params= replaces the URL's query (as upstream, UP-041)"
+status = "implemented"
+realises = ["LeanHttpx.Request.new"]
+test = ["tests/Conformance.lean::request params"]
+
+[[requirement]]
+id = "headers"
+upstream = "tests/models/test_headers.py::test_headers"
+title = "Headers: case-insensitive multi-dict operations"
+status = "implemented"
+realises = ["LeanHttpx.Headers.getList", "LeanHttpx.Headers.set", "LeanHttpx.Headers.update"]
+theorem = ["LeanHttpx.Headers.headers_merge_precedence"]
+test = ["tests/Conformance.lean::headers", "tests/Conformance.lean::header mutations"]
+
+[[requirement]]
+id = "headers.merge"
+upstream = "tests/client/test_headers.py::test_header_merge"
+title = "Client headers are overridden by request headers name by name"
+status = "implemented"
+realises = ["LeanHttpx.Client.buildRequest"]
+theorem = ["LeanHttpx.Headers.headers_merge_precedence"]
+test = ["tests/Conformance.lean::header merge"]
+
+[[requirement]]
+id = "cookies.jar"
+upstream = "tests/models/test_cookies.py::test_cookies_with_domain_and_path"
+title = "Cookies jar: set/get/delete/clear by name, domain and path"
+status = "implemented"
+realises = ["LeanHttpx.Cookies.set", "LeanHttpx.Cookies.get?", "LeanHttpx.Cookies.setCookie"]
+theorem = ["LeanHttpx.cookie_jar_set_get", "LeanHttpx.filter_key_setCookie"]
+test = ["tests/Conformance.lean::with domain and path", "tests/Props.lean::a cookie jar holds one cookie per key after any sequence of sets"]
+
+[[requirement]]
+id = "cookies.match"
+upstream = "tests/client/test_cookies.py::test_cookie_persistence"
+title = "Which cookies a request carries: domain match, path match (RFC 6265 5.1.4), secure, expiry"
+status = "implemented"
+realises = ["LeanHttpx.Cookies.cookiesForRequest", "LeanHttpx.Cookies.cookieHeader", "LeanHttpx.CookieJar.pathReturnOk", "LeanHttpx.CookieJar.domainReturnOk"]
+theorem = ["LeanHttpx.cookie_match_domain_path", "LeanHttpx.pathReturnOk_iff", "LeanHttpx.domainReturnOk_iff"]
+test = ["tests/Conformance.lean::cookie path and domain matching", "tests/Props.lean::Cookie header carries only path-matching cookies"]
+
+[[requirement]]
+id = "cookies.set-cookie"
+upstream = "tests/models/test_cookies.py::test_multiple_set_cookie"
+title = "Set-Cookie parsing and the default policy's set_ok (http.cookiejar)"
+status = "tested"
+realises = ["LeanHttpx.CookieJar.parseSetCookie", "LeanHttpx.CookieJar.setOk", "LeanHttpx.Cookies.extract"]
+test = ["tests/Conformance.lean::multiple set-cookie", "tests/Conformance.lean::redirect cookies"]
+
+[[requirement]]
+id = "cookies.port"
+upstream = "http.cookiejar DefaultCookiePolicy.set_ok_port"
+title = "The Port cookie attribute is ignored"
+status = "deviation"
+realises = ["LeanHttpx.CookieJar.parseSetCookie"]
+test = ["tests/Conformance.lean::multiple set-cookie"]
+
+[[requirement]]
+id = "request.build"
+upstream = "tests/models/test_requests.py::test_json_encoded_data"
+title = "Request bodies: content=, data=, json= with their headers; Host and Content-Length added"
+status = "implemented"
+realises = ["LeanHttpx.Request.new", "LeanHttpx.encodeRequest"]
+test = ["tests/Conformance.lean::json body", "tests/Conformance.lean::form body", "tests/Conformance.lean::content length"]
+
+[[requirement]]
+id = "request.files"
+upstream = "tests/test_multipart.py::test_multipart"
+title = "Multipart files= uploads"
+status = "excluded"
+
+[[requirement]]
+id = "response.model"
+upstream = "tests/models/test_responses.py::test_response"
+title = "Response: text, json, encoding, status classes, raise_for_status messages, links"
+status = "implemented"
+realises = ["LeanHttpx.Response.new", "LeanHttpx.Response.text", "LeanHttpx.Response.json", "LeanHttpx.Response.raiseForStatus", "LeanHttpx.Response.links"]
+test = ["tests/Conformance.lean::raise_for_status", "tests/Conformance.lean::response json", "tests/Conformance.lean::parse header links"]
+
+[[requirement]]
+id = "response.encodings"
+upstream = "tests/models/test_responses.py::test_response_set_explicit_encoding"
+title = "Text decoding supports UTF-8, ASCII and ISO-8859-1; other charsets fall back to the default"
+status = "deviation"
+realises = ["LeanHttpx.Response.decodeText"]
+test = ["tests/Conformance.lean::latin-1 charset", "tests/Conformance.lean::unknown charset falls back"]
+
+[[requirement]]
+id = "response.streaming"
+upstream = "tests/models/test_responses.py::test_iter_raw"
+title = "Streaming responses (iter_bytes, iter_lines, client.stream)"
+status = "excluded"
+
+[[requirement]]
+id = "decoders"
+upstream = "tests/test_decoders.py::test_gzip"
+title = "gzip and deflate content decoding (zlib, raw deflate fallback)"
+status = "tested"
+realises = ["LeanHttpx.Decoders.decodeContent", "LeanHttpx.Decoders.inflateFrom", "LeanHttpx.Decoders.gunzip"]
+test = ["tests/Conformance.lean::gzip decoding", "tests/Conformance.lean::raw deflate decoding", "tests/Props.lean::inflate is total on random bytes"]
+
+[[requirement]]
+id = "decoders.brotli-zstd"
+upstream = "tests/test_decoders.py::test_brotli"
+title = "Brotli and zstd decoding (optional upstream)"
+status = "excluded"
+
+[[requirement]]
+id = "redirects.method"
+upstream = "tests/client/test_redirects.py::test_redirect_303"
+title = "Redirect method rewriting (303/302 to GET, 301 POST to GET, 307/308 kept)"
+status = "implemented"
+realises = ["LeanHttpx.redirectMethod", "LeanHttpx.buildRedirectRequest"]
+theorem = ["LeanHttpx.redirect_method_rewrite", "LeanHttpx.redirect_307_308_preserve"]
+test = ["tests/Conformance.lean::method rewrite table", "tests/Conformance.lean::308 keeps body", "tests/Conformance.lean::303 drops body"]
+
+[[requirement]]
+id = "redirects.bound"
+upstream = "tests/client/test_redirects.py::test_too_many_redirects"
+title = "At most max_redirects redirects are followed; one more is TooManyRedirects"
+status = "implemented"
+realises = ["LeanHttpx.sendHandlingRedirects", "LeanHttpx.redirectLoop"]
+theorem = ["LeanHttpx.redirect_bounded", "LeanHttpx.redirect_history_le"]
+test = ["tests/Conformance.lean::too many redirects", "tests/Conformance.lean::multiple redirects"]
+
+[[requirement]]
+id = "redirects.headers"
+upstream = "tests/client/test_redirects.py::test_cross_domain_redirect_with_auth_header"
+title = "Redirect headers: Authorization dropped across origins, Host updated, Cookie re-set"
+status = "implemented"
+realises = ["LeanHttpx.redirectHeaders", "LeanHttpx.redirectUrl"]
+test = ["tests/Conformance.lean::cross-domain drops auth", "tests/Conformance.lean::same domain keeps auth", "tests/Conformance.lean::fragment kept"]
+
+[[requirement]]
+id = "redirects.custom-scheme"
+upstream = "tests/client/test_redirects.py::test_redirect_custom_scheme"
+title = "UnsupportedProtocol for a redirect to a custom scheme over MockTransport (not in httpx 0.28.1 either)"
+status = "excluded"
+
+[[requirement]]
+id = "auth.basic"
+upstream = "tests/client/test_auth.py::test_basic_auth"
+title = "Basic authentication; credentials in the URL"
+status = "implemented"
+realises = ["LeanHttpx.BasicAuth", "LeanHttpx.basicAuthHeader", "LeanHttpx.parseBasicAuth"]
+theorem = ["LeanHttpx.basic_auth_header", "LeanHttpx.Base64.decode_encode"]
+test = ["tests/Conformance.lean::basic auth", "tests/Conformance.lean::basic auth in url"]
+
+[[requirement]]
+id = "auth.digest"
+upstream = "tests/test_auth.py::test_digest_auth_rfc_7616_md5"
+title = "Digest authentication (RFC 7616); MD5, SHA-1, SHA-256, SHA-512 tested against vectors"
+status = "tested"
+realises = ["LeanHttpx.DigestAuth", "LeanHttpx.digestAuthorization", "LeanHttpx.Hash.md5", "LeanHttpx.Hash.sha256"]
+test = ["tests/Conformance.lean::digest RFC 7616 MD5 vector", "tests/Conformance.lean::digest RFC 7616 SHA-256 vector", "tests/Conformance.lean::digest auth"]
+
+[[requirement]]
+id = "auth.function"
+upstream = "tests/client/test_auth.py::test_custom_auth"
+title = "FunctionAuth and custom auth flows (bounded to 32 requests)"
+status = "deviation"
+realises = ["LeanHttpx.FunctionAuth", "LeanHttpx.maxAuthRequests"]
+test = ["tests/Conformance.lean::custom auth"]
+
+[[requirement]]
+id = "h1.request"
+upstream = "httpcore tests/_sync/test_http11.py::test_http11_connection"
+title = "HTTP/1.1 request serialisation (RFC 9112)"
+status = "implemented"
+realises = ["LeanHttpx.H1.printRequest", "LeanHttpx.H1.parseRequest", "LeanHttpx.H1.request"]
+theorem = ["LeanHttpx.H1.h1_request_print_parse"]
+test = ["tests/Conformance.lean::request printing", "tests/Conformance.lean::illegal header value"]
+
+[[requirement]]
+id = "h1.response"
+upstream = "httpcore tests/_sync/test_http11.py::test_http11_connection"
+title = "HTTP/1.1 response parsing with Content-Length, chunked, close-delimited and bodiless framing"
+status = "implemented"
+realises = ["LeanHttpx.H1.parseResponse", "LeanHttpx.H1.response", "LeanHttpx.H1.framingOf"]
+theorem = ["LeanHttpx.H1.h1_response_parse_print_ext"]
+test = ["tests/Conformance.lean::plain response", "tests/Conformance.lean::pipelined responses", "tests/Props.lean::response round trip on ByteArray (theorem h1_response_parse_print_ext)"]
+
+[[requirement]]
+id = "h1.chunked"
+upstream = "httpcore tests/_sync/test_http11.py::test_http11_early_hints"
+title = "Chunked transfer coding with extensions and trailers"
+status = "implemented"
+realises = ["LeanHttpx.H1.chunks", "LeanHttpx.H1.encodeChunked", "LeanHttpx.H1.decodeChunked"]
+theorem = ["LeanHttpx.H1.chunked_decode_encode"]
+test = ["tests/Conformance.lean::chunked with trailers", "tests/Props.lean::a chunked body split at random chunk boundaries decodes to the same bytes"]
+
+[[requirement]]
+id = "client.api"
+upstream = "tests/client/test_client.py::test_get"
+title = "Client with base_url, params, headers, cookies, auth, follow_redirects, timeouts, event hooks"
+status = "implemented"
+realises = ["LeanHttpx.Client.new", "LeanHttpx.Client.get", "LeanHttpx.Client.post", "LeanHttpx.Client.send", "LeanHttpx.Client.buildRequest"]
+test = ["tests/Conformance.lean::get", "tests/Conformance.lean::base_url", "tests/Conformance.lean::event hooks"]
+
+[[requirement]]
+id = "client.user-agent"
+upstream = "tests/client/test_headers.py::test_client_header"
+title = "Default User-Agent is lean-httpx/0.1.0 (upstream python-httpx/<version>)"
+status = "deviation"
+realises = ["LeanHttpx.userAgent"]
+test = ["tests/Conformance.lean::client headers"]
+
+[[requirement]]
+id = "transport.mock"
+upstream = "tests/test_api.py::test_get"
+title = "MockTransport"
+status = "implemented"
+realises = ["LeanHttpx.MockTransport", "LeanHttpx.MockTransport.io"]
+test = ["tests/Conformance.lean::get"]
+
+[[requirement]]
+id = "transport.asgi"
+upstream = "tests/test_asgi.py::test_asgi"
+title = "ASGITransport: an in-process application over the ASGI HTTP messages"
+status = "implemented"
+realises = ["LeanHttpx.ASGITransport", "LeanHttpx.ASGITransport.handle", "LeanHttpx.ASGITransport.scope"]
+test = ["tests/Conformance.lean::asgi hello", "tests/Conformance.lean::asgi upload", "tests/Conformance.lean::asgi exception without raise"]
+
+[[requirement]]
+id = "transport.http"
+upstream = "httpcore tests/_sync/test_http11.py::test_http11_connection"
+title = "HTTPTransport: HTTP/1.1 over TCP, one connection per request, Connection: close; no TLS, pooling or proxies"
+status = "deviation"
+realises = ["LeanHttpx.HTTPTransport", "LeanHttpx.toH1Request"]
+test = ["tests/Conformance.lean::request printing"]
+
+[[requirement]]
+id = "asyncclient"
+upstream = "tests/client/test_async_client.py::test_get"
+title = "AsyncClient is the same client in IO"
+status = "deviation"
+realises = ["LeanHttpx.AsyncClient"]
+test = ["tests/Conformance.lean::get"]
+
+[[requirement]]
+id = "wsgi"
+upstream = "tests/test_wsgi.py::test_wsgi"
+title = "WSGITransport"
+status = "excluded"
+
+[[requirement]]
+id = "proxies"
+upstream = "tests/client/test_proxies.py::test_proxies_parameter"
+title = "Proxies and environment configuration"
+status = "excluded"
+
+[[requirement]]
+id = "http2"
+upstream = "httpcore tests/_sync/test_http2.py::test_http2_connection"
+title = "HTTP/2 (card re31aj8ox62e)"
+status = "excluded"
