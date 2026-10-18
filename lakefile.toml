@@ -25,6 +25,12 @@
 name = "native"
 root = "tests.Native"
 
+# HTTP2Transport against a hostile in-process HTTP/2 server, and its
+# benchmark: `lake exe native2`, `lake exe native2 bench`.
+[[lean_exe]]
+name = "native2"
+root = "tests.NativeH2"
+
 [[require]]
 name = "LeanJson"
 git = "https://github.com/NitheeshWorks/lean-json"

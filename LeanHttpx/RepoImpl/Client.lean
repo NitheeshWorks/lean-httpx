@@ -1,7 +1,7 @@
 import LeanHttpx.RepoImpl.Redirects
 import LeanHttpx.RepoImpl.Auth
 import LeanHttpx.RepoImpl.Decoders
-import LeanHttpx.Transport
+import LeanHttpx.Transport2
 
 /-!
 # The client (`httpx.Client`)
@@ -77,8 +77,12 @@ namespace Client
 /-- **`httpx.Client(...)`**. -/
 def new (auth : Option Auth := none) (params : QueryParams := {}) (headers : Headers := {})
     (cookies : Cookies := {}) (timeout : Timeout := {}) (followRedirects : Bool := false)
-    (maxRedirects : Nat := 20) (baseUrl : String := "") (transport : Transport := HTTPTransport)
-    (eventHooks : EventHooks := {}) (defaultEncoding : String := "utf-8") : IO Client := do
+    (maxRedirects : Nat := 20) (baseUrl : String := "") (transport : Option Transport := none)
+    (eventHooks : EventHooks := {}) (defaultEncoding : String := "utf-8")
+    (http1 : Bool := true) (http2 : Bool := false) : IO Client := do
+  let transport ← match transport with
+    | some t => pure t
+    | none => httpTransport http1 http2
   let base ← match URL.parse baseUrl with
     | .ok u => pure u
     | .error e => throw (IO.userError (toString (HTTPError.invalidURL e.message)))
