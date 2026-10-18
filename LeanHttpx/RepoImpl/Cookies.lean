@@ -303,6 +303,11 @@ def update (other : Cookies) : Cookies := other.toList.foldl setCookie c
 /-- The cookie names (`for name in cookies`). -/
 def names : List String := c.toList.map (·.name)
 
+/-- `repr(cookies)`. -/
+def pyRepr : String :=
+  "<Cookies[" ++ ", ".intercalate (c.toList.map fun ck =>
+    s!"<Cookie {ck.name}={ck.value.getD ""} for {ck.domain} />") ++ "]>"
+
 /-- The number of cookies. -/
 def size : Nat := c.toList.length
 

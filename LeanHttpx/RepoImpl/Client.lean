@@ -100,8 +100,8 @@ def setCookies (j : Cookies) : IO Unit := c.cookieJar.set j
 appended to the base's path. -/
 def mergeUrl (url : URL) : Except HTTPError URL :=
   if url.isRelativeUrl then
-    let path := c.baseUrl.ref.path ++ String.ofList (url.ref.path.toList.dropWhile (· == '/'))
-    (c.baseUrl.copyWith (path := path) (query := url.ref.query)).mapError fun e => .invalidURL e.message
+    let raw := c.baseUrl.rawPath ++ String.ofList (url.rawPath.toList.dropWhile (· == '/'))
+    (c.baseUrl.copyWith (rawPath := some raw)).mapError fun e => .invalidURL e.message
   else .ok url
 
 /-- **`build_request`**: the request with the client's configuration merged

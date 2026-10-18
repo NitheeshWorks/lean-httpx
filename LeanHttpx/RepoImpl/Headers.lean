@@ -100,6 +100,21 @@ def multiItems : List (String × String) := h.raw.map fun p => (asciiLower p.1, 
 /-- The number of pairs (`len(headers)`). -/
 def size : Nat := h.raw.length
 
+/-- Equality as httpx compares headers: the same lower-cased pairs, in any
+order. -/
+def equiv (a b : Headers) : Bool := a.multiItems.isPerm b.multiItems
+
+/-- `repr(headers)`: a dict when names are distinct, else a list;
+`authorization` values hidden. -/
+def pyRepr : String :=
+  let items := h.multiItems.map fun (k, v) =>
+    (k, if k == "authorization" || k == "proxy-authorization" then "[secure]" else v)
+  let distinct := h.keys.length == items.length
+  if distinct then
+    "Headers({" ++ ", ".intercalate (items.map fun (k, v) => Text.pyRepr k ++ ": " ++ Text.pyRepr v) ++ "})"
+  else
+    "Headers([" ++ ", ".intercalate (items.map fun (k, v) => "(" ++ Text.pyRepr k ++ ", " ++ Text.pyRepr v ++ ")") ++ "])"
+
 instance : GetElem? Headers String String (fun h k => (h.get? k).isSome) where
   getElem h k ok := (h.get? k).get ok
   getElem? h k := h.get? k
@@ -188,6 +203,9 @@ protected def toString : String :=
   "&".intercalate (q.multiItems.map fun p => Text.quotePlus p.1 ++ "=" ++ Text.quotePlus p.2)
 
 instance : ToString QueryParams := ⟨QueryParams.toString⟩
+
+/-- `repr(params)`. -/
+def pyRepr : String := "QueryParams(" ++ Text.pyRepr (toString q) ++ ")"
 
 /-- Equality as httpx compares: the same multi-items, in any order. -/
 def equiv (a b : QueryParams) : Bool := a.multiItems.isPerm b.multiItems

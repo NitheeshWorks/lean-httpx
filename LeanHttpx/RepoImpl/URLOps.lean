@@ -90,7 +90,20 @@ def copyWith (scheme : String := u.ref.scheme) (username : Option String := none
     (password : Option String := none) (userinfo : String := u.ref.userinfo) (host : String := u.ref.host)
     (port : Option Nat := u.ref.port) (path : String := u.ref.path)
     (query : Option String := u.ref.query) (fragment : Option String := u.ref.fragment)
-    (params : Option QueryParams := none) : Except InvalidURL URL := do
+    (params : Option QueryParams := none) (netloc : Option String := none)
+    (rawPath : Option String := none) : Except InvalidURL URL := do
+  let (host, port) := match netloc with
+    | some n => match n.splitOn ":" with
+      | [h] => (h, none)
+      | h :: p :: _ => (h, p.toNat?)
+      | [] => (host, port)
+    | none => (host, port)
+  let (path, query) := match rawPath with
+    | some rp => match rp.splitOn "?" with
+      | [p] => (p, none)
+      | p :: q => (p, some ("?".intercalate q))
+      | [] => (path, query)
+    | none => (path, query)
   let userinfo :=
     if username.isSome || password.isSome then
       let un := String.ofList (Chars.quote Chars.usernameSafe (username.getD "").toList)
@@ -109,6 +122,25 @@ def copyWith (scheme : String := u.ref.scheme) (username : Option String := none
   if let some f := fragment then checkComponent "fragment" f.toList
   build scheme.toList userinfo.toList host.toList ((port.map decimal).getD []) path.toList
     (query.map String.toList) (fragment.map String.toList)
+
+/-- `url.copy_set_param(key, value)`. -/
+def copySetParam (key value : String) : Except InvalidURL URL := u.copyWith (params := some (u.params.set key value))
+
+/-- `url.copy_add_param(key, value)`. -/
+def copyAddParam (key value : String) : Except InvalidURL URL := u.copyWith (params := some (u.params.add key value))
+
+/-- `url.copy_remove_param(key)`. -/
+def copyRemoveParam (key : String) : Except InvalidURL URL := u.copyWith (params := some (u.params.remove key))
+
+/-- `url.copy_merge_params(params)`. -/
+def copyMergeParams (p : QueryParams) : Except InvalidURL URL := u.copyWith (params := some (u.params.merge p))
+
+/-- A URL from components (`httpx.URL(scheme=..., host=..., ...)`). -/
+def ofComponents (scheme : String := "") (host : String := "") (port : Option Nat := none)
+    (path : String := "") (query : Option String := none) (fragment : Option String := none) :
+    Except InvalidURL URL :=
+  (⟨{}, by decide⟩ : URL).copyWith (scheme := scheme) (host := host) (port := port) (path := path)
+    (query := query) (fragment := fragment)
 
 /-- RFC 3986 section 5.2.4, `remove_dot_segments`, on the segments of a path. -/
 def removeDotSegments (segs : List (List Char)) : List (List Char) :=
