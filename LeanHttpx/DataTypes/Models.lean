@@ -83,10 +83,12 @@ structure Cookie where
   discard : Bool := true
   deriving DecidableEq, Repr, Inhabited
 
-/-- A cookie jar (`http.cookiejar.CookieJar`, wrapped by `httpx.Cookies`):
-cookies by domain, then path, then name, each level in insertion order. -/
+/-- A cookie jar (`http.cookiejar.CookieJar`, wrapped by `httpx.Cookies`).
+Upstream nests dictionaries by domain, then path, then name; this is the
+same order flattened: the cookies of a domain are contiguous, and within it
+those of a path. -/
 structure Cookies where
-  jar : List (String × List (String × List (String × Cookie))) := []
+  jar : List Cookie := []
   deriving DecidableEq, Repr, Inhabited
 
 

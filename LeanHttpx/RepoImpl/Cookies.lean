@@ -59,9 +59,9 @@ def isSecure (url : URL) : Bool := url.ref.scheme == "https" || url.ref.scheme =
 /-- **Path match** (`path_return_ok`, RFC 6265 section 5.1.4): the request
 path is the cookie path, or starts with it at a `/` boundary. -/
 def pathReturnOk (cookiePath reqPath : String) : Bool :=
-  reqPath == cookiePath ||
-    (reqPath.startsWith cookiePath &&
-      (cookiePath.endsWith "/" || (reqPath.drop cookiePath.length).startsWith "/"))
+  let c := cookiePath.toList
+  let r := reqPath.toList
+  r == c || (c.isPrefixOf r && (c.getLast? == some '/' || r[c.length]? == some '/'))
 
 /-- The domain with a leading dot (an empty domain stays empty). -/
 def dotted (d : String) : String := if d.isEmpty || d.startsWith "." then d else "." ++ d
@@ -70,10 +70,8 @@ def dotted (d : String) : String := if d.isEmpty || d.startsWith "." then d else
 `return_ok_domain` for Netscape cookies): the dotted request host ends with
 the dotted cookie domain. -/
 def domainReturnOk (domain : String) (url : URL) : Bool :=
-  let reqHost := dotted (requestHost url)
-  let erhn := dotted (effRequestHost url)
-  let d := dotted domain
-  reqHost.endsWith d || erhn.endsWith d
+  let d := (dotted domain).toList
+  d.isSuffixOf (dotted (requestHost url)).toList || d.isSuffixOf (dotted (effRequestHost url)).toList
 
 /-- Whether a cookie has expired at time `now`. -/
 def _root_.LeanHttpx.Cookie.isExpired (c : Cookie) (now : Int) : Bool :=
@@ -249,22 +247,30 @@ namespace Cookies
 variable (c : Cookies)
 
 /-- Every cookie, by domain, path and name (`for cookie in jar`). -/
-def toList : List Cookie := c.jar.flatMap fun d => d.2.flatMap fun p => p.2.map (·.2)
+def toList : List Cookie := c.jar
 
-/-- Store a cookie under its domain, path and name, replacing one with the
-same key (`CookieJar.set_cookie`). -/
+/-- The key a jar stores a cookie under. -/
+def _root_.LeanHttpx.Cookie.key (ck : Cookie) : String × String × String := (ck.domain, ck.path, ck.name)
+
+/-- Where a new key goes: after the last cookie of its domain and path, else
+after the last of its domain, else at the end (dictionary insertion order,
+level by level). -/
+def insertPos (l : List Cookie) (ck : Cookie) : Nat :=
+  let after (p : Cookie → Bool) : Option Nat :=
+    (l.reverse.findIdx? p).map fun i => l.length - i
+  ((after fun x => x.domain == ck.domain && x.path == ck.path).orElse
+    fun _ => after fun x => x.domain == ck.domain).getD l.length
+
+/-- **Store a cookie** (`CookieJar.set_cookie`): it replaces a cookie with
+the same key in place; a new key is inserted in insertion order. -/
 def setCookie (ck : Cookie) : Cookies :=
-  let upd {α β : Type} [BEq α] (l : List (α × β)) (k : α) (f : Option β → β) : List (α × β) :=
-    if l.any (·.1 == k) then l.map fun e => if e.1 == k then (k, f (some e.2)) else e
-    else l ++ [(k, f none)]
-  ⟨upd c.jar ck.domain fun paths =>
-    upd (paths.getD []) ck.path fun names =>
-      upd (names.getD []) ck.name fun _ => ck⟩
+  let pos := (c.jar.findIdx? (·.key == ck.key)).getD (insertPos c.jar ck)
+  let rest := c.jar.filter (·.key != ck.key)
+  ⟨rest.take pos ++ ck :: rest.drop pos⟩
 
 /-- Remove the cookie with a key (`CookieJar.clear(domain, path, name)`). -/
 def clearKey (domain path name : String) : Cookies :=
-  ⟨c.jar.map fun d => if d.1 == domain then
-    (d.1, d.2.map fun p => if p.1 == path then (p.1, p.2.filter (·.1 != name)) else p) else d⟩
+  ⟨c.jar.filter (·.key != (domain, path, name))⟩
 
 /-- `cookies.set(name, value, domain="", path="/")`. -/
 def set (name value : String) (domain : String := "") (path : String := "/") : Cookies :=
@@ -289,11 +295,7 @@ def delete (name : String) (domain path : Option String := none) : Cookies :=
 
 /-- `cookies.clear(domain=None, path=None)`. -/
 def clear (domain path : Option String := none) : Cookies :=
-  ⟨match domain with
-    | none => []
-    | some d => match path with
-      | none => c.jar.filter (·.1 != d)
-      | some p => c.jar.map fun e => if e.1 == d then (e.1, e.2.filter (·.1 != p)) else e⟩
+  ⟨c.jar.filter fun ck => !(domain.all (· == ck.domain) && path.all (· == ck.path))⟩
 
 /-- `cookies.update(other)`: store every cookie of `other`. -/
 def update (other : Cookies) : Cookies := other.toList.foldl setCookie c
@@ -309,15 +311,16 @@ def ofList (l : List (String × String)) : Cookies := l.foldl (fun j p => j.set 
 
 instance : Coe (List (String × String)) Cookies := ⟨ofList⟩
 
+/-- A cookie goes with a request: domain match, path match, and `return_ok`
+(secure, unexpired, domain). -/
+def matchesRequest (ck : Cookie) (url : URL) (now : Int) : Bool :=
+  domainReturnOk ck.domain url && pathReturnOk ck.path (requestPath url) && returnOk ck url now
+
 /-- **The cookies a request to `url` carries at time `now`**
 (`_cookies_for_request`): those whose domain and path match and that
 `return_ok` accepts, in jar order. -/
 def cookiesForRequest (url : URL) (now : Int) : List Cookie :=
-  c.jar.flatMap fun d =>
-    if !domainReturnOk d.1 url then [] else
-    d.2.flatMap fun p =>
-      if !pathReturnOk p.1 (requestPath url) then [] else
-      (p.2.map (·.2)).filter fun ck => returnOk ck url now
+  c.jar.filter fun ck => matchesRequest ck url now
 
 /-- The `Cookie` header value for a request (`_cookie_attrs`): longest path
 first, `name=value` (or the bare name), joined with `"; "`. -/

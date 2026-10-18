@@ -111,27 +111,25 @@ def copyWith (scheme : String := u.ref.scheme) (username : Option String := none
     (query.map String.toList) (fragment.map String.toList)
 
 /-- RFC 3986 section 5.2.4, `remove_dot_segments`, on the segments of a path. -/
-def removeDotSegments (segs : List String) : List String :=
-  let out := segs.foldl (fun (out : List String) s =>
-    if s == "." then out else if s == ".." then out.drop 1 else s :: out) []
+def removeDotSegments (segs : List (List Char)) : List (List Char) :=
+  let out := segs.foldl (fun (out : List (List Char)) s =>
+    if s == ['.'] then out else if s == ['.', '.'] then out.drop 1 else s :: out) []
   out.reverse
 
 /-- The merged and dot-free path of a reference against a base
 (RFC 3986 sections 5.2.2 to 5.2.4). -/
-def resolvePath (baseHasAuthority : Bool) (basePath refPath : String) : String :=
+def resolvePath (baseHasAuthority : Bool) (basePath refPath : List Char) : List Char :=
   let merged :=
-    if refPath.startsWith "/" then refPath
-    else if baseHasAuthority && basePath.isEmpty then "/" ++ refPath
-    else
-      let segs := basePath.splitOn "/"
-      "/".intercalate (segs.dropLast ++ [refPath])
-  let segs := merged.splitOn "/"
-  let last := segs.getLastD ""
+    if refPath.head? == some '/' then refPath
+    else if baseHasAuthority && basePath.isEmpty then '/' :: refPath
+    else List.intercalate ['/'] ((basePath.splitOn '/').dropLast ++ [refPath])
+  let segs := merged.splitOn '/'
+  let last := segs.getLastD []
   let kept := removeDotSegments segs
-  let kept := if last == "." || last == ".." then kept ++ [""] else kept
+  let kept := if last == ['.'] || last == ['.', '.'] then kept ++ [[]] else kept
   -- A leading empty segment is the root: keep it.
-  let kept := if merged.startsWith "/" && kept.head? != some "" then "" :: kept else kept
-  "/".intercalate kept
+  let kept := if merged.head? == some '/' && kept.head? != some [] then [] :: kept else kept
+  List.intercalate ['/'] kept
 
 /-- **`url.join(ref)`**: resolve a reference against this URL (RFC 3986
 section 5.2.2, non-strict: a reference with the base's scheme is treated as
@@ -149,7 +147,7 @@ def join (ref : String) : Except InvalidURL URL := do
     else if rHasAuth then (b.scheme, r.userinfo, r.host, r.port, r.path, r.query)
     else if r.path.isEmpty then
       (b.scheme, b.userinfo, b.host, b.port, b.path, if r.query.isSome then r.query else b.query)
-    else (b.scheme, b.userinfo, b.host, b.port, resolvePath bHasAuth b.path r.path, r.query)
+    else (b.scheme, b.userinfo, b.host, b.port, String.ofList (resolvePath bHasAuth b.path.toList r.path.toList), r.query)
   build scheme.toList ui.toList (printHost host.toList) ((port.map decimal).getD []) path.toList
     (query.map String.toList) (r.fragment.map String.toList)
 

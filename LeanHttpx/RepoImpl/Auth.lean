@@ -48,8 +48,9 @@ def splitColon (b : List UInt8) : List UInt8 × List UInt8 :=
 /-- Read Basic credentials back from an `Authorization` value: the inverse
 of `basicAuthHeader` (what a server does with it). -/
 def parseBasicAuth (header : String) : Option (String × String) := do
-  let token ← (header.dropPrefix? "Basic ").map (·.toString)
-  let bytes ← Base64.decode token
+  let h := header.toList
+  if h.take 6 != "Basic ".toList then none
+  let bytes ← Base64.decode (String.ofList (h.drop 6))
   let (u, p) := splitColon bytes.data.toList
   let u ← String.fromUTF8? ⟨u.toArray⟩
   let p ← String.fromUTF8? ⟨p.toArray⟩
