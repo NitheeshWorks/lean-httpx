@@ -1,3 +1,7 @@
+import LeanHttpx.DataTypes
+import LeanHttpx.RepoImpl
+import LeanHttpx.Specifications
+import LeanHttpx.Proofs
 import LeanHttpx.APIs
 import LeanHttpx.Proofs.Verified
 
