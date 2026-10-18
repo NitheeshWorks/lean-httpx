@@ -106,8 +106,8 @@ def splitAuth (a : List Char) : List Char × List Char × List Char :=
 /-- Print a host: in brackets if it contains a colon (an IPv6 literal). -/
 def printHost (h : List Char) : List Char := if h.contains ':' then '[' :: h ++ [']'] else h
 
-/-- The decimal digits of a port. -/
-def decimal (n : Nat) : List Char := (Nat.repr n).toList
+/-- The decimal digits of a port (`Keel.Codec.decimal`). -/
+abbrev decimal (n : Nat) : List Char := Keel.Codec.decimal n
 
 /-- Print an authority (upstream `ParseResult.authority`). -/
 def printAuth (ui host : List Char) (port : Option Nat) : List Char :=

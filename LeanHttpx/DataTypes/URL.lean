@@ -1,4 +1,5 @@
 import LeanHttpx.DataTypes.Chars
+import Keel.Codec
 
 /-!
 # URLs: the parsed form and its canonical-form invariant
@@ -29,8 +30,8 @@ instance : ToString InvalidURL := ⟨InvalidURL.message⟩
 
 namespace URLParse
 
-/-- The decimal value of a digit string. -/
-def digitsValue (l : List Char) : Nat := l.foldl (fun acc c => acc * 10 + (c.toNat - 48)) 0
+/-- The decimal value of a digit string (`Keel.Codec.digitsValue`). -/
+abbrev digitsValue (l : List Char) : Nat := Keel.Codec.digitsValue l
 
 /-- Split at every `c`. -/
 abbrev splitAt (c : Char) (l : List Char) : List (List Char) := l.splitOn c
@@ -106,18 +107,22 @@ def defaultPort (scheme : List Char) : Option Nat :=
   else if scheme = "ws".toList then some 80 else if scheme = "wss".toList then some 443
   else if scheme = "ftp".toList then some 21 else none
 
+/-- What follows a leading colon. -/
+def afterColon? : List Char → Option (List Char)
+  | ':' :: r => some r
+  | _ => none
+
 /-- Where a relative reference would be misread as having a scheme: the
-scheme that `l` starts with (`"" ` for a leading colon), if any. -/
+scheme that `l` starts with (empty for a leading colon) and what follows the
+colon, if any. -/
 def schemeOf (l : List Char) : Option (List Char × List Char) :=
   match l with
-  | ':' :: r => some ([], r)
-  | c :: _ =>
-    if c.isAlpha then
-      match l.dropWhile isSchemeChar with
-      | ':' :: r => some (l.takeWhile isSchemeChar, r)
-      | _ => none
-    else none
   | [] => none
+  | c :: _ =>
+    if c = ':' then some ([], l.tail)
+    else if c.isAlpha then
+      (afterColon? (l.dropWhile isSchemeChar)).map fun r => (l.takeWhile isSchemeChar, r)
+    else none
 
 /-- No path segment is `.` or `..`. -/
 def noDotSegments (p : List Char) : Bool :=
@@ -128,12 +133,17 @@ lower case. -/
 def schemeCanonical (s : List Char) : Bool :=
   s.isEmpty || ((s.head?.map Char.isAlpha).getD false && s.all isSchemeChar && s.all fun c => c.toLower == c)
 
+/-- A character that can appear in a parsed host: graphic ASCII other than
+the delimiters `@ / ? # [ ]`. -/
+def hostChar (c : Char) : Bool :=
+  isGraphic c && c != '@' && c != '/' && c != '?' && c != '#' && c != '[' && c != ']'
+
 /-- A host in normal form: empty, an IPv4 address, an IPv6 address (which
 contains a colon), or a registered name of host-safe characters that does not
 look like an IPv4 address and is lower case outside its escapes. -/
 def hostCanonical (h : List Char) : Bool :=
-  h.isEmpty || (ipv4Style h && validIPv4 h) || (h.contains ':' && validIPv6 h) ||
-    (!ipv4Style h && h.all hostSafe && lowerHost h == h)
+  h.all hostChar && (h.isEmpty || (ipv4Style h && validIPv4 h) || (h.contains ':' && validIPv6 h) ||
+    (!ipv4Style h && h.all hostSafe && lowerHost h == h))
 
 end URLParse
 
@@ -156,7 +166,7 @@ namespace ParseResult
 
 /-- The URL has an authority part: userinfo, host or port. -/
 def hasAuthority (r : ParseResult) : Bool :=
-  !r.userinfo.isEmpty || !r.host.isEmpty || r.port.isSome
+  !r.userinfo.toList.isEmpty || !r.host.toList.isEmpty || r.port.isSome
 
 /-- The path is in normal form for the rest of the URL: path-safe
 characters; with an authority it is empty or starts with `/`; without one it
@@ -169,8 +179,8 @@ def pathCanonical (r : ParseResult) : Bool :=
   p.all pathSafe &&
   (!r.hasAuthority || p.isEmpty || p.head? == some '/') &&
   (r.hasAuthority || !(p.take 2 == ['/', '/'])) &&
-  (!r.scheme.isEmpty || r.hasAuthority || (schemeOf p).isNone) &&
-  ((r.scheme.isEmpty && !r.hasAuthority) || noDotSegments p)
+  (!r.scheme.toList.isEmpty || r.hasAuthority || (schemeOf p).isNone) &&
+  ((r.scheme.toList.isEmpty && !r.hasAuthority) || noDotSegments p)
 
 /-- **Canonical form**: every component is what the parser produces. -/
 def Canonical (r : ParseResult) : Prop :=
