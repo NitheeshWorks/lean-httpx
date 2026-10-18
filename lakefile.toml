@@ -23,3 +23,8 @@
 name = "LeanJson"
 git = "https://github.com/NitheeshWorks/lean-json"
 rev = "main"
+
+[[require]]
+name = "Keel"
+git = "https://github.com/NitheeshWorks/lean-keel"
+rev = "main"
