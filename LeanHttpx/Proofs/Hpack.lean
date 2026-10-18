@@ -338,8 +338,6 @@ theorem choose_not_sizeUpdate (t : Table) (f : HeaderField) (n : Nat) : choose t
   · simp
   · split <;> simp
 
-/-- The size of a header list. -/
-def listSize (fs : List HeaderField) : Nat := (fs.map fieldSize).sum
 
 theorem applyAll_chooseAll (limit maxList : Nat) (fs : List HeaderField) :
     ∀ (t : Table) (started : Bool) (total : Nat), total + listSize fs ≤ maxList →
@@ -360,8 +358,6 @@ theorem applyAll_chooseAll (limit maxList : Nat) (fs : List HeaderField) :
 
 /-! ## Indices stay small -/
 
-/-- A table within its maximum size, the maximum below `2 ^ 28`. -/
-def Table.Wf (t : Table) : Prop := t.size ≤ t.maxSize ∧ t.maxSize < 2 ^ 28
 
 theorem sum_fitPrefix (es : List Field) (b : Nat) : ((fitPrefix es b).map entrySize).sum ≤ b := by
   induction es generalizing b with
@@ -470,6 +466,39 @@ theorem hpack_decode_encode (e : Encoder) (d : Decoder) (fs : List HeaderField)
     simp only [List.singleton_append, applyAll, Rep.isSizeUpdate, Bool.false_and, Bool.false_eq_true,
       ite_false, apply, show ¬ n > d.maxTableSize by omega, bind, Except.bind, pure, Except.pure]
     rw [← htab, applyAll_chooseAll _ _ fs (e.table.resize n) false 0 (by omega)]
+
+/-- After a block the encoder has no size update pending. -/
+theorem encode_pending (e : Encoder) (fs : List HeaderField) : (e.encode fs).2.pendingSize = none := by
+  unfold Encoder.encode; split <;> rfl
+
+/-- Encoding keeps the table well formed. -/
+theorem wf_encode (e : Encoder) (fs : List HeaderField) (hwf : e.table.Wf)
+    (hpend : ∀ n, e.pendingSize = some n → n < 2 ^ 28)
+    (hs : ∀ f ∈ fs, f.name.size < 2 ^ 28 ∧ f.value.size < 2 ^ 28) : (e.encode fs).2.table.Wf := by
+  unfold Encoder.encode
+  cases hp : e.pendingSize with
+  | none => exact (chooseAll_ok fs hs e.table hwf).2
+  | some n => exact (chooseAll_ok fs hs _ (wf_resize e.table n (hpend n hp))).2
+
+/-- **The stateful round trip**: header lists encoded in order, one block
+each, decode in order to the same lists, the decoder's table ending where
+the encoder's does. -/
+theorem hpack_decode_encode_seq (ls : List (List HeaderField)) : ∀ (e : Encoder) (d : Decoder),
+    e.table = d.table → e.table.Wf → d.maxTableSize < 2 ^ 28 →
+    (∀ n, e.pendingSize = some n → n ≤ d.maxTableSize) →
+    (∀ fs ∈ ls, (∀ f ∈ fs, f.name.size < 2 ^ 28 ∧ f.value.size < 2 ^ 28) ∧ listSize fs ≤ d.maxHeaderListSize) →
+    d.decodeAll (e.encodeAll ls).1 = .ok (ls, { d with table := (e.encodeAll ls).2.table }) := by
+  induction ls with
+  | nil => intro e d htab _ _ _ _; simp [Encoder.encodeAll, Decoder.decodeAll, htab]
+  | cons fs ls ih =>
+    intro e d htab hwf hlim hpend hls
+    obtain ⟨hs, hl⟩ := hls fs (by simp)
+    have h1 := hpack_decode_encode e d fs htab hwf hlim hpend hs hl
+    have hwf' := wf_encode e fs hwf (fun n hn => by have := hpend n hn; omega) hs
+    have ih' := ih (e.encode fs).2 { d with table := (e.encode fs).2.table } rfl hwf' hlim
+      (by simp [encode_pending]) (fun fs' h => hls fs' (by simp [h]))
+    simp only [Encoder.encodeAll, Decoder.decodeAll, h1, bind, Except.bind, pure, Except.pure]
+    rw [ih']
 
 theorem apply_chooseStatic (limit : Nat) (t : Table) (f : HeaderField) :
     apply limit t (chooseStatic f) = .ok (t, some f) := by

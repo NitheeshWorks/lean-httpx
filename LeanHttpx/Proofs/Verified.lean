@@ -3,6 +3,9 @@ import LeanHttpx.Proofs.H1
 import LeanHttpx.Specifications.URL
 import LeanHttpx.Specifications.H1
 import LeanHttpx.Specifications.Client
+import LeanHttpx.Specifications.H2
+import LeanHttpx.Proofs.H2
+import LeanHttpx.Proofs.Hpack
 import LeanHttpx.Proofs.Headers
 import LeanHttpx.Proofs.Cookies
 import LeanHttpx.Proofs.Redirects
@@ -59,6 +62,17 @@ structure VerifiedClient : Prop where
   /-- `basic_auth_header`. -/
   basicAuth : BasicAuthHeader
 
+/-- HTTP/2 frames (RFC 9113) and HPACK (RFC 7541). -/
+structure VerifiedH2 : Prop where
+  /-- `h2_frame_parse_print_ext`. -/
+  frameParsePrint : FrameParsePrint
+  /-- `hpack_decode_encode`: one block, the dynamic table in step. -/
+  hpackDecodeEncode : HpackDecodeEncode
+  /-- `hpack_decode_encode_static`: the static table and literals. -/
+  hpackDecodeEncodeStatic : HpackDecodeEncodeStatic
+  /-- `hpack_decode_encode_seq`: blocks in sequence, the table carried along. -/
+  hpackDecodeEncodeSeq : HpackDecodeEncodeSeq
+
 theorem theVerifiedURL : VerifiedURL where
   parsePrint u h := url_parse_print_ext u h
   joinRfc3986 := url_join_rfc3986
@@ -77,5 +91,11 @@ theorem theVerifiedH1 : VerifiedH1 where
   responseParsePrint m r rest h := H1.h1_response_parse_print_ext m r h rest
   chunkedDecodeEncode cs rest h := H1.chunked_decode_encode cs h rest
   readerIsCodec := H1.readResponse_eq_parseResponse
+
+theorem theVerifiedH2 : VerifiedH2 where
+  frameParsePrint max f rest h hp hmax := H2.h2_frame_parse_print_ext max f h hp hmax rest
+  hpackDecodeEncode e d fs h hs hl := Hpack.hpack_decode_encode e d fs h.1 h.2.1 h.2.2.1 h.2.2.2 hs hl
+  hpackDecodeEncodeStatic d fs hs hl := Hpack.hpack_decode_encode_static d fs hs hl
+  hpackDecodeEncodeSeq e d ls h hls := Hpack.hpack_decode_encode_seq ls e d h.1 h.2.1 h.2.2.1 h.2.2.2 hls
 
 end LeanHttpx

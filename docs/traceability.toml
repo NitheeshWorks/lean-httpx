@@ -398,7 +398,102 @@ title = "Proxies and environment configuration"
 status = "excluded"
 
 [[requirement]]
-id = "http2"
+id = "h2.frame"
+upstream = "hyperframe 6.1.0 hyperframe/frame.py (Frame.serialize, Frame.parse_frame_header, parse_body), as h2 4.4.1 uses it"
+title = "HTTP/2 frame codec (RFC 9113 section 4 and 6): every frame type, padding, priority, unknown types kept"
+status = "implemented"
+realises = ["LeanHttpx.H2.printFrame", "LeanHttpx.H2.parseFrame", "LeanHttpx.H2.parseRaw", "LeanHttpx.H2.Frame.ofRaw", "LeanHttpx.H2.Frame.toRaw", "LeanHttpx.H2.Frame.ok", "LeanHttpx.H2.encodeFrame"]
+theorem = ["LeanHttpx.H2.h2_frame_parse_print_ext", "LeanHttpx.H2.parseRaw_encodeRaw", "LeanHttpx.H2.ofRaw_toRaw", "LeanHttpx.theVerifiedH2"]
+test = ["tests/Conformance.lean::h2 golden frame", "tests/upstream/h2_golden.py", "tests/Props.lean::Frame API: encodeFrame bytes parse back, refused past the maximum size"]
+
+[[requirement]]
+id = "h2.frame-size"
+upstream = "h2 tests/test_invalid_frame_sequences.py::TestInvalidFrameSequences::test_receiving_frames_with_insufficent_size"
+title = "SETTINGS_MAX_FRAME_SIZE: a frame longer than the maximum is refused from its header, before its payload is read"
+status = "implemented"
+realises = ["LeanHttpx.H2.parseRaw", "LeanHttpx.H2.Conn.receive"]
+theorem = ["LeanHttpx.H2.h2_frame_parse_print_ext"]
+test = ["tests/NativeH2.lean::/big-frame", "tests/Conformance.lean::not HTTP/2", "tests/Props.lean::HTTP/2: on random bytes the buffers stay bounded"]
+
+[[requirement]]
+id = "hpack.codec"
+upstream = "hpack 4.2.0 hpack/hpack.py (Encoder.encode, Decoder.decode); RFC 7541 appendix C"
+title = "HPACK: integers, strings, Huffman decoding, static and dynamic tables, size updates; one block round trip"
+status = "implemented"
+realises = ["LeanHttpx.Hpack.Encoder.encode", "LeanHttpx.Hpack.Decoder.decode", "LeanHttpx.Hpack.encodeStatic", "LeanHttpx.Hpack.Synced.encode", "LeanHttpx.Hpack.encodeStaticChecked"]
+theorem = ["LeanHttpx.Hpack.hpack_decode_encode", "LeanHttpx.Hpack.hpack_decode_encode_static", "LeanHttpx.theVerifiedH2"]
+test = ["tests/Conformance.lean::h2 golden hpack", "tests/Props.lean::HPACK: a sequence of blocks decodes on the executable path, any table size", "tests/Props.lean::HPACK API: chained Synced.encode blocks decode, the sides in step"]
+
+[[requirement]]
+id = "hpack.stateful"
+upstream = "hpack 4.2.0 tests (dynamic table across blocks); RFC 7541 C.3 and C.5"
+title = "HPACK dynamic table carried across blocks on both sides: a sequence of blocks decodes to its header lists"
+status = "implemented"
+realises = ["LeanHttpx.Hpack.Encoder.encodeAll", "LeanHttpx.Hpack.Decoder.decodeAll", "LeanHttpx.Hpack.Synced"]
+theorem = ["LeanHttpx.Hpack.hpack_decode_encode_seq", "LeanHttpx.Hpack.wf_encode", "LeanHttpx.Hpack.encode_pending"]
+test = ["tests/Conformance.lean::h2 golden hpack: rfc7541 c3 requests", "tests/Conformance.lean::h2 golden hpack: rfc7541 c5 responses table 256"]
+
+[[requirement]]
+id = "hpack.limits"
+upstream = "h2 tests/test_invalid_headers.py::TestOversizedHeaders::test_hpack_bomb_response"
+title = "HPACK bounds: dynamic table within SETTINGS_HEADER_TABLE_SIZE, header list within max_header_list_size (checked field by field), integers at most 5 continuation bytes"
+status = "implemented"
+realises = ["LeanHttpx.Hpack.applyAll", "LeanHttpx.Hpack.apply", "LeanHttpx.Hpack.readCont", "LeanHttpx.Hpack.maxContBytes"]
+theorem = ["LeanHttpx.Hpack.wf_add", "LeanHttpx.Hpack.wf_resize"]
+test = ["tests/Conformance.lean::HPACK bomb", "tests/Conformance.lean::h2 golden hpack", "tests/NativeH2.lean::/hpack-bomb", "tests/Props.lean::HPACK: random bytes are refused or decoded, the table within its limit"]
+
+[[requirement]]
+id = "hpack.huffman"
+upstream = "hpack 4.2.0 hpack/huffman.py, hpack/huffman_table.py (decode_huffman)"
+title = "Huffman code of RFC 7541 appendix B, canonical from its code lengths; EOS, long codes and bad padding refused"
+status = "tested"
+realises = ["LeanHttpx.Huffman.encode", "LeanHttpx.Huffman.decode", "LeanHttpx.Huffman.codes"]
+test = ["tests/Conformance.lean::h2 golden huffman", "tests/Props.lean::Huffman: decode (encode b) = b"]
+
+[[requirement]]
+id = "h2.connection"
 upstream = "httpcore tests/_sync/test_http2.py::test_http2_connection"
-title = "HTTP/2 (card re31aj8ox62e)"
-status = "excluded"
+title = "HTTP/2 client connection: preface, settings, streams, flow control, 1xx, trailers, RST_STREAM, GOAWAY"
+status = "tested"
+realises = ["LeanHttpx.H2.Conn.new", "LeanHttpx.H2.Conn.startRequest", "LeanHttpx.H2.Conn.receive", "LeanHttpx.H2.Conn.outcome", "LeanHttpx.H2.Conn.onFrame"]
+test = ["tests/Conformance.lean::a response", "tests/Conformance.lean::a request body", "tests/Conformance.lean::reset stream, connection reusable", "tests/Conformance.lean::GOAWAY, connection not reusable", "tests/Conformance.lean::a body larger than the initial window", "tests/Conformance.lean::MAX_CONCURRENT_STREAMS updates", "tests/Conformance.lean::100 then 200", "tests/Props.lean::HTTP/2: a response is the same however the bytes arrive"]
+
+[[requirement]]
+id = "h2.validation"
+upstream = "h2 tests/test_invalid_headers.py::TestInvalidFrameSequences::test_headers_event"
+title = "Response fields checked as h2 checks them (RFC 9113 8.2, 8.3): names, values, connection-specific fields, te, pseudo-headers, trailers"
+status = "tested"
+realises = ["LeanHttpx.H2.Conn.badField", "LeanHttpx.H2.Conn.responseHead", "LeanHttpx.H2.Conn.trailerCheck"]
+test = ["tests/Conformance.lean::invalid response fields", "tests/Conformance.lean::late pseudo-header", "tests/Conformance.lean::te: trailers", "tests/Conformance.lean::pseudo-header in trailers"]
+
+[[requirement]]
+id = "h2.settings"
+upstream = "h2 tests/test_invalid_frame_sequences.py::TestInvalidFrameSequences::test_reject_invalid_settings_values"
+title = "SETTINGS validation (ENABLE_PUSH from a server, INITIAL_WINDOW_SIZE, MAX_FRAME_SIZE) and window overflow"
+status = "tested"
+realises = ["LeanHttpx.H2.Conn.onFrame"]
+test = ["tests/Conformance.lean::invalid SETTINGS values", "tests/Conformance.lean::server ENABLE_PUSH 1", "tests/Conformance.lean::connection window overflow", "tests/Conformance.lean::stream window overflow resets the stream", "tests/Conformance.lean::SETTINGS overflows a stream window", "tests/NativeH2.lean::/window-overflow"]
+
+[[requirement]]
+id = "h2.floods"
+upstream = "h2 tests/test_invalid_frame_sequences.py::TestInvalidFrameSequences::test_prevent_continuation_dos"
+title = "Hostile peers: CONTINUATION floods, header blocks, PING and SETTINGS floods, rapid reset, unread output, all bounded (Limits)"
+status = "deviation"
+realises = ["LeanHttpx.H2.Limits", "LeanHttpx.H2.Conn.control", "LeanHttpx.H2.Conn.progress"]
+test = ["tests/Conformance.lean::CONTINUATION flood", "tests/NativeH2.lean::/continuation-flood", "tests/NativeH2.lean::/ping-flood", "tests/NativeH2.lean::/settings-flood", "tests/NativeH2.lean::/rst-flood", "tests/NativeH2.lean::/hpack-bomb"]
+
+[[requirement]]
+id = "h2.concurrency"
+upstream = "httpcore tests/_sync/test_http2.py::test_http2_remote_max_streams_update"
+title = "Concurrent streams bounded by min(our MAX_CONCURRENT_STREAMS 100, the peer's); requests multiplexed on one connection"
+status = "tested"
+realises = ["LeanHttpx.H2.Conn.canStart", "LeanHttpx.H2Pool", "LeanHttpx.H2Link.start"]
+test = ["tests/Conformance.lean::MAX_CONCURRENT_STREAMS updates", "tests/NativeH2.lean::multiplexed"]
+
+[[requirement]]
+id = "h2.transport"
+upstream = "httpx tests/client/test_client.py (Client(http2=True)); httpcore/_sync/http2.py"
+title = "Client.new (http1 := false) (http2 := true): HTTP/2 with prior knowledge over TCP, errors as httpx classes, body memory and time bounded"
+status = "deviation"
+realises = ["LeanHttpx.HTTP2Transport.new", "LeanHttpx.httpTransport", "LeanHttpx.h2Fields", "LeanHttpx.Client.new"]
+test = ["tests/NativeH2.lean::/ok", "tests/NativeH2.lean::bench", "tests/Props.lean::HTTP/2: request fields are pseudo-headers then lower-case fields, credentials never indexed"]

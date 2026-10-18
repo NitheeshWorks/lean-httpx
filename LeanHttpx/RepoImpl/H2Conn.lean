@@ -254,23 +254,44 @@ def progress : Conn := { c with controlFrames := 0 }
 /-- A stream identifier we opened. -/
 def opened (sid : Nat) : Bool := sid % 2 == 1 && sid < c.nextStreamId
 
-/-- Whether a header name is valid in a response: lower case, no
-connection-specific field (RFC 9113 section 8.2). -/
+/-- Why a received field is invalid, if it is (RFC 9113 sections 8.2.1
+and 8.2.2, as h2's `validate_headers` checks): a name that is empty or has
+upper case, control, space, non-ASCII or (after the first byte) colon
+bytes; a value with NUL, CR or LF, or surrounded by space or tab; a
+connection-specific field; `te` other than `trailers`. -/
 def badField (f : HeaderField) : Option String :=
-  if f.name.data.any (fun b => 65 ≤ b && b ≤ 90) then some "Received uppercase header name"
+  let n := f.name.data
+  let v := f.value.data
+  if n.size == 0 then some "Received header name with zero length."
+  else if n.any (fun b => 65 ≤ b && b ≤ 90) then some "Received uppercase header name"
+  else if n.any (fun b => b ≤ 32 || b ≥ 127) then some "Illegal character in header name"
+  else if (n.extract 1 n.size).any (· == 58) then some "Illegal character ':' in header name"
+  else if v.any (fun b => b == 0 || b == 10 || b == 13) then some "Illegal character in header value"
+  else if v.size > 0 && (v[0]! == 32 || v[0]! == 9 || v[v.size - 1]! == 32 || v[v.size - 1]! == 9) then
+    some "Received header value surrounded by whitespace"
   else if [ "connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade"].any
-      (fun n => f.name == n.toUTF8) then some "Connection-specific header field present"
+      (fun x => f.name == x.toUTF8) then some "Connection-specific header field present"
+  else if f.name == "te".toUTF8 && (String.fromUTF8? f.value |>.map (·.toLower)) != some "trailers" then
+    some "Invalid value for TE header"
   else none
+
+/-- Whether a field is a pseudo-header. -/
+def isPseudo (f : HeaderField) : Bool := f.name.size > 0 && f.name[0]! == 58
+
+/-- Check a trailer block: no pseudo-headers, every field valid. -/
+def trailerCheck (fs : List HeaderField) : Except String Unit := do
+  if fs.any isPseudo then throw "Received pseudo-header in trailer"
+  if let some f := fs.find? fun f => (badField f).isSome then throw ((badField f).getD "")
 
 /-- Read the status of a response head and keep its regular fields. -/
 def responseHead (fs : List HeaderField) : Except String (Nat × List HeaderField) := do
-  let isPseudo := fun (f : HeaderField) => f.name.size > 0 && f.name[0]! == 58
   let pseudos := fs.takeWhile isPseudo
   let rest := fs.dropWhile isPseudo
   if rest.any isPseudo then throw "Received pseudo-header in trailer or after a regular header"
   if let some f := fs.find? fun f => (badField f).isSome then throw ((badField f).getD "")
   let some st := pseudos.find? (·.name == ":status".toUTF8) | throw "Response has no :status"
   if pseudos.any (·.name != ":status".toUTF8) then throw "Unexpected pseudo-header in response"
+  if pseudos.length != 1 then throw "Received duplicate pseudo-header field :status"
   let digits := st.value.data.toList
   if digits.length != 3 || !digits.all (fun b => 48 ≤ b && b ≤ 57) then throw "Invalid :status"
   pure (digits.foldl (fun a b => a * 10 + (b.toNat - 48)) 0, rest)
@@ -289,7 +310,9 @@ def onHeaderBlock (sid : Nat) (endStream : Bool) (block : ByteArray) : Conn :=
       | some _ =>
         -- trailers: must end the stream
         if !endStream then c.fail ⟨.protocolError, "Trailers without END_STREAM"⟩
-        else (c.modifyStream sid fun s => { s with ended := true }).progress
+        else match trailerCheck fs with
+          | .error m => (c.modifyStream sid fun s => { s with reset := some m }).send (.rstStream sid ErrorCode.protocolError.toNat)
+          | .ok () => (c.modifyStream sid fun s => { s with ended := true }).progress
       | none =>
         match responseHead fs with
         | .error m => (c.modifyStream sid fun s => { s with reset := some m }).send (.rstStream sid ErrorCode.protocolError.toNat)
@@ -359,12 +382,16 @@ def onFrame (len : Nat) (f : Frame) : Conn :=
     | .settings false ps => Id.run do
       let mut c := c
       for (k, v) in ps do
-        if k == settingsEnablePush && v > 1 then return c.fail ⟨.protocolError, "Invalid ENABLE_PUSH"⟩
+        -- a server may not enable push (RFC 9113 6.5.2)
+        if k == settingsEnablePush && v != 0 then return c.fail ⟨.protocolError, "Invalid ENABLE_PUSH"⟩
         if k == settingsInitialWindowSize then
           if v > 2 ^ 31 - 1 then return c.fail ⟨.flowControlError, "Invalid INITIAL_WINDOW_SIZE"⟩
           let delta : Int := (v : Int) - c.peer.initialWindowSize
           c := { c with peer := { c.peer with initialWindowSize := v },
                         streams := c.streams.map fun s => { s with sendWindow := s.sendWindow + delta } }
+          -- RFC 9113 6.9.2: a change that overflows a stream window is a connection error
+          if c.streams.any (·.sendWindow > 2 ^ 31 - 1) then
+            return c.fail ⟨.flowControlError, "INITIAL_WINDOW_SIZE overflows a stream window"⟩
         if k == settingsMaxFrameSize then
           if v < defaultMaxFrameSize || v > maxFrameSizeLimit then
             return c.fail ⟨.protocolError, "Invalid MAX_FRAME_SIZE"⟩
@@ -394,7 +421,10 @@ def onFrame (len : Nat) (f : Frame) : Conn :=
         match c.stream? sid with
         | none => if c.opened sid then c.control else c.fail ⟨.protocolError, "WINDOW_UPDATE on an idle stream"⟩
         | some s =>
-          if s.sendWindow + inc > 2 ^ 31 - 1 then c.fail ⟨.flowControlError, "Stream window too large"⟩
+          -- a stream error (RFC 9113 6.9.1): reset that stream only
+          if s.sendWindow + inc > 2 ^ 31 - 1 then
+            (c.modifyStream sid fun s => { s with reset := some s!"Stream {sid} window too large" }).send
+              (.rstStream sid ErrorCode.flowControlError.toNat)
           else ((c.modifyStream sid fun s => { s with sendWindow := s.sendWindow + inc }).flushStream sid).control
     | .continuation .. => c.fail ⟨.protocolError, "CONTINUATION without HEADERS"⟩
     | .unknown .. => c.control

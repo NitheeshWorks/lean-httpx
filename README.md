@@ -5,7 +5,8 @@
 
 A clean-room port of [httpx and httpcore](https://github.com/encode/httpx) to Lean 4: an
 HTTP client whose logic is pure functions over a transport, with the URL parser, the
-HTTP/1.1 codec, cookie matching, redirects and Basic credentials proved.
+HTTP/1.1 codec, the HTTP/2 frame codec and HPACK, cookie matching, redirects and Basic
+credentials proved.
 
 Part of the verified FastAPI stack: [lean-fastapi](https://github.com/NitheeshWorks/lean-fastapi)
 and its dependencies, each ported as its own repo with its proofs. This one depends on
@@ -67,8 +68,19 @@ def demo : IO Unit := do
 | `httpx.URL(s)`, `url.join(r)`, `url.copy_with(...)` | `URL.parse s`, `u.join r`, `u.copyWith …` |
 | `httpx.Headers`, `httpx.QueryParams`, `httpx.Cookies` | `Headers`, `QueryParams`, `Cookies` |
 | `httpx.BasicAuth`, `httpx.DigestAuth`, `auth=("u", "p")`, `auth=func` | `BasicAuth u p`, `← DigestAuth u p`, `some ("u", "p")`, `FunctionAuth f` |
+| `httpx.Client(http1=False, http2=True)` | `Client.new (http1 := false) (http2 := true)` |
 | `httpx.MockTransport(handler)`, `httpx.ASGITransport(app)`, `httpx.HTTPTransport()` | `MockTransport handler`, `ASGITransport.mk app …`, `HTTPTransport` |
 | `httpx.HTTPStatusError`, `httpx.TooManyRedirects`, ... | `HTTPError.httpStatusError`, `.tooManyRedirects`, ... |
+
+HTTP/2, as in httpx's docs (`docs/http2.md`), here with prior knowledge over TCP (there
+is no TLS, so no ALPN): requests from several tasks share one connection, as streams.
+
+```lean
+def demo2 : IO Unit := do
+  let client ← Client.new (http1 := false) (http2 := true)
+  let r ← client.get "http://localhost:8000/"
+  IO.println r.httpVersion             -- HTTP/2
+```
 
 Errors: in `IO`, an httpx exception is an `IO.userError` with the exception's name and
 message (`TooManyRedirects: Exceeded maximum allowed redirects.`); the pure functions
@@ -120,13 +132,24 @@ Every theorem below is checked by Lean with no axioms beyond `propext`, `Quot.so
 * **Redirect bound** (`redirect_bounded`): a response's redirect history has at most
   `max_redirects` entries (its type), and a server that always redirects ends in
   `TooManyRedirects`; such a server exists (`redirect_bounded_satisfiable`).
+* **HTTP/2 frames** (`h2_frame_parse_print_ext`): every valid frame whose payload fits
+  the maximum frame size parses back from its bytes on any continuation:
+  `parseFrame max (printFrame f ++ rest) = .done f rest`.
+* **HPACK** (`hpack_decode_encode`, `hpack_decode_encode_static`,
+  `hpack_decode_encode_seq`): a block decodes to the header list it encodes, within the
+  header-list limit, with the dynamic table in step on both sides; without the dynamic
+  table the decoder is left unchanged; and a sequence of blocks, the table carried along,
+  decodes to its sequence of lists. `Hpack.Synced.encode` returns the block with its proof.
 * **Basic credentials** (`basic_auth_header`): `parseBasicAuth (basicAuthHeader u p) =
   some (u, p)` when the user-id has no colon; from `Base64.decode_encode`.
 
 Tested rather than proved: Digest auth and the hash functions (RFC vectors), inflate,
 `Set-Cookie` parsing, query strings, the chunked fast path, and `HTTPTransport` itself
 against a hostile server (head limit 100 KiB, framing, error classes, numbers bounded before
-conversion, a 200 MiB body within twice upstream's time and memory). See [CONTRIBUTING.md](CONTRIBUTING.md#tested-not-proved).
+conversion, a 200 MiB body within twice upstream's time and memory); for HTTP/2, the
+Huffman code, the connection state machine and `HTTP2Transport` (frame size, HPACK bombs,
+CONTINUATION, PING and SETTINGS floods, rapid reset, concurrent streams, flow control,
+against a hostile server; golden tests against h2 4.4.1). See [CONTRIBUTING.md](CONTRIBUTING.md#tested-not-proved).
 
 ## Getting started
 
@@ -134,7 +157,7 @@ conversion, a 200 MiB body within twice upstream's time and memory). See [CONTRI
 lake build            # library, proofs, and both test executables
 lake exe props        # property tests (seeded; `lake exe props 42`)
 lake exe conformance  # cases re-expressed from the upstream test suites
-scripts/bench.sh      # HTTPTransport against a hostile local server, and the benchmark
+scripts/bench.sh      # both transports against hostile local servers, and the benchmarks
 scripts/check.sh      # the whole CI gate, locally
 ```
 
@@ -142,7 +165,7 @@ Toolchain: `leanprover/lean4:v4.35.0` (pinned in `lean-toolchain`; `elan` instal
 
 ## Status
 
-Milestone 8a: the HTTP/1.1 client. HTTP/2 is milestone 8b.
+Milestones 8a and 8b: the HTTP/1.1 client, and HTTP/2 (frames, HPACK, multiplexing).
 
 ## License
 

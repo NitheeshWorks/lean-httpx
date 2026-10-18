@@ -107,7 +107,156 @@ def Rng.urlString (r : Rng) : String × Rng := Id.run do
       r := r''; out := out ++ s
   return (out, r)
 
+/-! ## HTTP/2 -/
+
+def h2Field (r : Rng) : Hpack.HeaderField × Rng :=
+  let (n, r) := r.string "abcxyz-".toList 6
+  let (v, r) := r.bytes 12
+  let (sens, r) := r.nat 4
+  (⟨("x-" ++ n).toUTF8, v, sens == 0⟩, r)
+
+def h2Fields' (r : Rng) (maxN : Nat) : List Hpack.HeaderField × Rng := Id.run do
+  let (n, r) := r.nat (maxN + 1)
+  let mut r := r
+  let mut out := #[]
+  for _ in [0:n] do
+    let (f, r') := h2Field r
+    r := r'
+    out := out.push (if n % 3 == 0 && out.size > 0 then out[0]! else f)
+  return (out.toList, r)
+
+def frameBytes (fs : List H2.Frame) : ByteArray := fs.foldl (fun b f => b ++ H2.printFrame f) .empty
+
+/-- A server's answer to stream 1: SETTINGS, PING, a response head, DATA in
+pieces, the last ending the stream. -/
+def serverAnswer (r : Rng) : ByteArray × ByteArray × Rng := Id.run do
+  -- field values valid in a response (no control bytes, no surrounding space)
+  let (fs, r) := h2Fields' r 3
+  let fs := fs.map fun f => { f with value := (Hash.hex f.value).toUTF8 }
+  let head := (({} : Hpack.Encoder).encode (⟨":status".toUTF8, "200".toUTF8, false⟩ :: fs)).1
+  let (n, r) := r.nat 5
+  let mut r := r
+  let mut body := ByteArray.empty
+  let mut frames : Array H2.Frame := #[.settings false [(H2.settingsMaxConcurrentStreams, 10)], .ping false "abcdefgh".toUTF8,
+    .headers 1 head false true none none]
+  for i in [0:n + 1] do
+    let (d, r') := r.bytes 40
+    r := r'
+    body := body ++ d
+    frames := frames.push (.data 1 d (i == n) none)
+  return (frameBytes frames.toList, body, r)
+
+/-- Split bytes at random points. -/
+def splitRandom (r : Rng) (b : ByteArray) : List ByteArray × Rng := Id.run do
+  let mut r := r
+  let mut pos := 0
+  let mut out := #[]
+  for _ in [0:b.size + 1] do
+    if pos ≥ b.size then break
+    let (k, r') := r.nat 20
+    r := r'
+    let e := min b.size (pos + k + 1)
+    out := out.push (b.extract pos e)
+    pos := e
+  return (out.toList, r)
+
+def started1 : H2.Conn :=
+  match (H2.Conn.new).startRequest [⟨":method".toUTF8, "GET".toUTF8, false⟩] .empty with
+  | .ok (c, _) => c
+  | .error _ => H2.Conn.new
+
+def outcomeStr (c : H2.Conn) : String := match c.outcome 1 with
+  | none => "pending"
+  | some (.error m) => s!"error {m}"
+  | some (.ok (st, hs, b)) => s!"{st} {hs.length} {Hash.hex b}"
+
+
 def properties : List Property := [
+  ⟨"HPACK API: chained Synced.encode blocks decode, the sides in step", fun r => Id.run do
+    let mut r := r
+    let mut s := Hpack.Synced.new
+    for _ in [0:4] do
+      let (fs, r') := h2Fields' r 6
+      r := r'
+      match s.encode fs with
+      | none => return (some "refused", r)
+      | some ⟨(b, s'), _⟩ =>
+        match s.dec.decode b with
+        | .ok (fs', d) => if fs' != fs || d.table.entries != s'.enc.table.entries then return (some "mismatch", r)
+        | .error e => return (some e.message, r)
+        s := s'
+    return (none, r)⟩,
+  ⟨"Frame API: encodeFrame bytes parse back, refused past the maximum size", fun r =>
+    let (d, r) := r.bytes 64
+    let (sid, r) := r.nat 5
+    let f := H2.Frame.data (sid + 1) d true none
+    let ok := match H2.encodeFrame 32 f with
+      | some ⟨b, _⟩ => d.size ≤ 32 && match H2.parseFrame 32 b with | .done _ rest => rest.size == 0 | _ => false
+      | none => d.size > 32
+    (if ok then none else some s!"{d.size}", r)⟩,
+  ⟨"Huffman: decode (encode b) = b", fun r =>
+    let (b, r) := r.bytes 64
+    (if Huffman.decode (Huffman.encode b) == some b then none else some s!"{b.toList}", r)⟩,
+  ⟨"Huffman: an encoding's padding is under a byte of ones", fun r =>
+    let (b, r) := r.bytes 32
+    let e := Huffman.encode b
+    let bits := (b.toList.map fun x => Huffman.codeLengths[x.toNat]!).sum
+    (if e.size == (bits + 7) / 8 then none else some s!"{b.toList}", r)⟩,
+  ⟨"HPACK: a sequence of blocks decodes on the executable path, any table size", fun r => Id.run do
+    let (sz, r) := r.nat 300
+    let mut r := r
+    let mut e : Hpack.Encoder := ({} : Hpack.Encoder).setMaxSize sz
+    let mut d : Hpack.Decoder := {}
+    for _ in [0:4] do
+      let (fs, r') := h2Fields' r 6
+      r := r'
+      let (b, e') := e.encode fs
+      e := e'
+      match d.decode b with
+      | .ok (fs', d') =>
+        if fs' != fs then return (some s!"size {sz}: {fs.length} fields", r)
+        d := d'
+      | .error err => return (some s!"size {sz}: {err.message}", r)
+    return (none, r)⟩,
+  ⟨"HPACK: random bytes are refused or decoded, the table within its limit", fun r =>
+    let (b, r) := r.bytes 40
+    let d : Hpack.Decoder := { table := { maxSize := 256 }, maxTableSize := 256, maxHeaderListSize := 512 }
+    match d.decode b with
+    | .ok (fs, d') =>
+      (if d'.table.size ≤ d'.table.maxSize && d'.table.maxSize ≤ 256 && (fs.map Hpack.fieldSize).sum ≤ 512 then none
+       else some s!"{b.toList}", r)
+    | .error _ => (none, r)⟩,
+  ⟨"HTTP/2: a response is the same however the bytes arrive", fun r =>
+    let (wire, body, r) := serverAnswer r
+    let (pieces, r) := splitRandom r wire
+    let whole := started1.receive wire
+    let split := pieces.foldl (fun c p => c.receive p) started1
+    let ok := outcomeStr whole == outcomeStr split && (outcomeStr whole).endsWith (Hash.hex body)
+      && (outcomeStr whole).startsWith "200"
+    (if ok then none else some s!"{outcomeStr whole} vs {outcomeStr split}", r)⟩,
+  ⟨"HTTP/2: on random bytes the buffers stay bounded", fun r =>
+    let (b, r) := r.bytes 200
+    let (pieces, r) := splitRandom r b
+    let c := pieces.foldl (fun c p => c.receive p) started1
+    let ok := c.inbuf.size ≤ 9 + c.limits.maxFrameSize && c.out.size ≤ c.limits.maxPendingOutput + 9 + 16384
+      && c.streams.length ≤ 1
+    (if ok then none else some s!"{b.toList}", r)⟩,
+  ⟨"HTTP/2: request fields are pseudo-headers then lower-case fields, credentials never indexed", fun r =>
+    let (k, r) := r.string "aAbB-".toList 5
+    let (v, r) := r.string "xy".toList 4
+    let hs : List (String × String) := [("Host", "example.org"), ("Authorization", "Basic x"), ("X-" ++ k, v),
+      ("Transfer-Encoding", "chunked")]
+    match URL.parse "http://example.com/p?q=1" >>= fun u => Request.new "GET" u (headers := hs) with
+    | .error _ => (some "request", r)
+    | .ok req =>
+      let fs := h2Fields req
+      let names := fs.map fun f => String.fromUTF8! f.name
+      let ok := names.take 4 == [":method", ":authority", ":scheme", ":path"]
+        && (fs.getD 1 default).value == "example.org".toUTF8
+        && (fs.drop 4).all (fun f => (String.fromUTF8! f.name) == asciiLower (String.fromUTF8! f.name))
+        && !names.contains "host" && !names.contains "transfer-encoding"
+        && fs.all (fun f => f.sensitive == (f.name == "authorization".toUTF8))
+      (if ok then none else some s!"{names}", r)⟩,
   ⟨"URL.parse never reaches its internal canonical-form check", fun r =>
     let (s, r) := r.urlString
     match URL.parse s with

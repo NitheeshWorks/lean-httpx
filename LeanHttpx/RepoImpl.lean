@@ -8,6 +8,7 @@ import LeanHttpx.RepoImpl.Decoders
 import LeanHttpx.RepoImpl.H1
 import LeanHttpx.RepoImpl.H1Body
 import LeanHttpx.RepoImpl.H1Stream
+import LeanHttpx.RepoImpl.H2Conn
 import LeanHttpx.RepoImpl.H2Frame
 import LeanHttpx.RepoImpl.Hash
 import LeanHttpx.RepoImpl.Headers

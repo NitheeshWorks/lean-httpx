@@ -282,6 +282,14 @@ def Rep.isSizeUpdate : Rep → Bool
 /-- The size a header list counts (section 4.1 of RFC 7540, as h2 counts it). -/
 def fieldSize (f : HeaderField) : Nat := f.name.size + f.value.size + 32
 
+/-- The size of a header list (RFC 7541 section 4.1 per field, as the
+header-list limit counts it). -/
+def listSize (fs : List HeaderField) : Nat := (fs.map fieldSize).sum
+
+/-- A table within its maximum size, the maximum below `2 ^ 28` (so every
+size update and index fits the integers this decoder reads). -/
+def Table.Wf (t : Table) : Prop := t.size ≤ t.maxSize ∧ t.maxSize < 2 ^ 28
+
 /-- The decoding side: its table, the table size this side allows, and the
 largest header list it accepts. -/
 structure Decoder where
@@ -360,6 +368,22 @@ def Encoder.encode (e : Encoder) (fs : List HeaderField) : ByteArray × Encoder 
     | none => ([], e.table)
   let (rs, t) := chooseAll t fs
   (encodeReps (pre ++ rs), { table := t, pendingSize := none })
+
+/-- Encode header lists in order, one block each, the table carried along. -/
+def Encoder.encodeAll (e : Encoder) : List (List HeaderField) → List ByteArray × Encoder
+  | [] => ([], e)
+  | fs :: ls =>
+    let (b, e') := e.encode fs
+    let (bs, e'') := e'.encodeAll ls
+    (b :: bs, e'')
+
+/-- Decode blocks in order, the table carried along. -/
+def Decoder.decodeAll (d : Decoder) : List ByteArray → Except Error (List (List HeaderField) × Decoder)
+  | [] => .ok ([], d)
+  | b :: bs => do
+    let (fs, d') ← d.decode b
+    let (ls, d'') ← d'.decodeAll bs
+    pure (fs :: ls, d'')
 
 /-- After the peer's `SETTINGS_HEADER_TABLE_SIZE`: use at most that size,
 and say so at the start of the next block. -/

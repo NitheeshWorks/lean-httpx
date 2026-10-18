@@ -4,12 +4,13 @@ import LeanHttpx.Specifications
 import LeanHttpx.Proofs
 import LeanHttpx.APIs
 import LeanHttpx.Transport
+import LeanHttpx.Transport2
 import LeanHttpx.Proofs.Verified
 
 /-!
 # LeanHttpx
 
-A clean-room port of httpx and httpcore to Lean 4: a sans-I/O HTTP client: URLs, headers, cookies, auth, redirects and the HTTP/1.1 codec, with proved round trips.
+A clean-room port of httpx and httpcore to Lean 4: a sans-I/O HTTP client: URLs, headers, cookies, auth, redirects, the HTTP/1.1 codec, and HTTP/2 frames and HPACK, with proved round trips.
 
 Layering, bottom to top (each layer imports only the ones below it):
 

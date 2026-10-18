@@ -17,7 +17,8 @@ to bytes:
 | `Specifications/` | the properties, in `Prop` | the contract |
 | `Proofs/` | theorems; `Proofs/Verified.lean` bundles one `Verified<Layer>` per layer | yes |
 | `APIs/` | the public surface, returning refinements | by construction |
-| `Transport.lean` | `HTTPTransport`, the only module doing network I/O | no; tested |
+| `Transport.lean` | `HTTPTransport`, network I/O for HTTP/1.1 | no; tested |
+| `Transport2.lean` | `HTTP2Transport`, network I/O for HTTP/2: a pool of multiplexed connections | no; tested |
 
 Module map: `RepoImpl/URL.lean` (parser and printer), `URLOps.lean` (properties,
 `copyWith`, `join`), `Headers.lean` (`Headers`, `QueryParams`), `Cookies.lean`
@@ -29,7 +30,12 @@ loop over any monad), `Client.lean`, `Transports.lean` (`Transport`, `MockTransp
 response codec), `H1Stream.lean` (where a response ends on a stream: the
 head's blank line, the last chunk, and h11's limits), `Codec.lean` (three combinators added to `Keel.Codec`: `guard`,
 `fail`, `bytesN`), `Decoders.lean` (inflate, gzip, zlib), `Base64.lean`, `Hash.lean`,
-`Text.lean`. `scripts/gen-aggregators.py` regenerates the layer aggregator modules.
+`Text.lean`. HTTP/2: `DataTypes/H2.lean` (frames, error codes, settings),
+`RepoImpl/Bytes.lean` (big-endian readers and their lemmas), `H2Frame.lean`
+(the frame codec), `Huffman.lean` (the RFC 7541 code, canonical from its
+code lengths), `Hpack.lean` (integers, strings, tables, the encoder and
+decoder), `H2Conn.lean` (the sans-I/O client connection: streams, flow
+control, settings, limits). `scripts/gen-aggregators.py` regenerates the layer aggregator modules.
 
 **Stack depth.** Every parser of network input is iterative: `Keel.Parser.many`,
 `takeBytes` (a loop into a `ByteArray`), or a bounded `for` loop. There is no
@@ -51,7 +57,26 @@ their httpx class (`ReadTimeout`, `RemoteProtocolError`, ...): a transport
 raises them as `"Name: message"` and `Client.sendSingle` reads the class
 back (`HTTPError.ofString?`); any other exception propagates unchanged.
 
-Everything except the transport module is a pure function. This is
+**Hostile HTTP/2 peers.** `H2.Conn` is a pure state machine over bytes, and
+every resource a peer can make it hold is bounded by `H2.Limits`: a frame
+longer than `SETTINGS_MAX_FRAME_SIZE` (16384) is refused from its header,
+before its payload is read, so the input buffer never holds more than one
+frame; the HPACK dynamic table is within the size we advertised and a size
+update above it is refused; the header list (65536, h2's
+`max_header_list_size`) is checked field by field as it decodes, so a small
+block cannot expand into a large list; a header block may span at most 64
+CONTINUATION frames (h2's `CONTINUATION_BACKLOG`) and 256 KiB; at most 100
+streams are open (our `MAX_CONCURRENT_STREAMS`, or fewer if the peer says
+so); 10000 frames in a row that make no progress on a request (PING,
+SETTINGS, PRIORITY, RST_STREAM, WINDOW_UPDATE, empty DATA, unknown types) end
+the connection with ENHANCE_YOUR_CALM, which bounds PING and SETTINGS floods
+and rapid reset; and queued output (acknowledgements the peer does not read)
+is at most 1 MiB. `tests/NativeH2.lean` runs each attack against the client
+from a hostile server in the test process, next to what httpx 0.28.1 does
+on the same server, and bounds a 200 MiB body to twice upstream's time and
+memory.
+
+Everything except the transport modules is a pure function. This is
 load-bearing: a round-trip property of a function is an equation that
 `omega` and `simp` attack directly; the same property of a procedure would
 be a Hoare triple over a heap.
@@ -103,6 +128,16 @@ Listed here with the reason, and in `docs/traceability.toml` with
   transport's reader is the codec (`readResponse_eq_parseResponse`).
 * **`HTTPTransport`** (time, memory, limits and error classes): native checks
   against a hostile local server and a benchmark, `tests/Native.lean`.
+* **The Huffman code** (`Huffman.encode`, `decode`): tested against hpack's
+  encodings (`tests/upstream/h2_golden.py`) and as a round trip on random
+  bytes. The HPACK theorems are stated for raw literals, which is what our
+  encoder sends; the decoder reads Huffman strings too.
+* **`H2.Conn`** (the connection state machine) and **`HTTP2Transport`**:
+  conformance cases from httpcore's and h2's tests, properties (the same
+  response however the bytes are split; bounded buffers on random bytes),
+  and the native hostile-server checks and benchmark in `tests/NativeH2.lean`.
+  The codecs underneath are proved (`h2_frame_parse_print_ext`,
+  `hpack_decode_encode`, `hpack_decode_encode_seq`).
 * **`URL.parse` reaches canonical form**: `build` checks `ParseResult.Canonical`
   at run time; that the check never fails on any input is tested on random
   URL-like strings (it is what makes `URL` carry its invariant).
@@ -110,7 +145,7 @@ Listed here with the reason, and in `docs/traceability.toml` with
 ### Deviations from upstream
 
 Each is a row with `status = "deviation"` in `docs/traceability.toml`. Upstream
-defects found while porting are recorded as UP-035 to UP-041 (see
+defects found while porting are recorded as UP-035 to UP-041, UP-056 and UP-057 (see
 `upstream-spec/findings.jsonl`).
 
 * URL normal form, to make `url_parse_print_ext` true: host percent-escapes keep
@@ -138,6 +173,23 @@ defects found while porting are recorded as UP-035 to UP-041 (see
   `http.cookiejar` catches the exception and drops every cookie of the
   response. A chunk size of more than 20 hex digits is refused (h11's limit),
   so `chunked_decode_encode` is stated for chunks below 2^80 bytes.
+* HTTP/2 is with prior knowledge over TCP (`Client.new (http1 := false)
+  (http2 := true)`): no TLS, so no ALPN, and no `Upgrade: h2c`. With both
+  `http1` and `http2` the client uses HTTP/1.1, as httpx does without TLS.
+* HTTP/2 protocol errors the server causes are `RemoteProtocolError`;
+  httpcore raises them as `LocalProtocolError` (UP-056). The messages keep
+  h2's wording where there is one, prefixed by the error code.
+* The HPACK encoder sends raw literals, never Huffman (hpack Huffman-codes
+  by default); a table size the peer lowers is applied up to 4096. The
+  decoder reads both. Received fields are validated as h2 does, but an
+  invalid response head resets its stream (an RFC 9113 stream error), where
+  h2 ends the connection.
+* h2 has no limit on PING, SETTINGS or other frames that make no progress,
+  nor on the output its acknowledgements queue; ours has (see "Hostile HTTP/2
+  peers"). A WINDOW_UPDATE of 0 is refused by the connection, where
+  hyperframe refuses it while parsing the frame. A frame of unknown type is
+  printed with its length (hyperframe's `ExtensionFrame` built with a body
+  prints length 0, UP-057).
 * The default `User-Agent` is `lean-httpx/0.1.0`.
 * An authentication flow sends at most 32 requests (upstream's generators are
   unbounded; Basic and Digest send at most two).
@@ -150,6 +202,12 @@ defects found while porting are recorded as UP-035 to UP-041 (see
 * `tests/Native.lean`: `HTTPTransport` against a hostile server in the same
   process (`lake exe native`), and the 200 MiB benchmark (`scripts/bench.sh`).
   `lake exe native serve` runs only the server, to run upstream httpx against.
+* `tests/NativeH2.lean`: the same for HTTP/2 (`lake exe native2`, `lake exe
+  native2 bench`, `lake exe native2 serve`).
+* `tests/upstream/h2_golden.py` writes `tests/upstream/h2_golden.txt`, the
+  outcomes of h2's codecs (hyperframe, hpack) that the conformance cases
+  "h2 golden" compare with; rerun it with
+  `upstream-spec/.venv/bin/python -I tests/upstream/h2_golden.py > tests/upstream/h2_golden.txt`.
 * `tests/pbt/`: a separate Lake package, the one place an external dependency
   (`plausible`) is taken.
 

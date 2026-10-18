@@ -959,10 +959,307 @@ def h1Cases : List Case := [
     | none => pure false⟩
 ]
 
+/-! ## h2 golden fixtures
+
+Each line of `tests/upstream/h2_golden.txt` is an outcome of h2's codecs
+(hyperframe 6.1.0, hpack 4.2.0, as h2 4.4.1 pins them), produced by
+`tests/upstream/h2_golden.py`. Frames hyperframe prints are parsed and
+printed back to the same bytes; frames it refuses are refused; hpack's
+blocks decode to its header lists and, where hpack sends no Huffman, our
+encoder prints the same block; hpack's Huffman codes match ours. -/
+
+def unhex (s : String) : ByteArray := Id.run do
+  let cs := s.toList.toArray
+  let mut out := ByteArray.emptyWithCapacity (cs.size / 2)
+  for i in [0:cs.size / 2] do
+    out := out.push (Chars.hexValue cs[2*i]! * 16 + Chars.hexValue cs[2*i+1]!).toUInt8
+  return out
+
+def hexOf (b : ByteArray) : String := Hash.hex b
+
+def fieldsLine (fs : List Hpack.HeaderField) : String :=
+  ";".intercalate (fs.map fun f => s!"{if f.sensitive then "!" else ""}{hexOf f.name}={hexOf f.value}")
+
+def parseFields (s : String) : List Hpack.HeaderField :=
+  if s.isEmpty then [] else (s.splitOn ";").map fun p =>
+    let (sens, p) := if p.startsWith "!" then (true, p.drop 1 |>.toString) else (false, p)
+    match p.splitOn "=" with
+    | [n, v] => ⟨unhex n, unhex v, sens⟩
+    | _ => ⟨unhex p, .empty, sens⟩
+
+def goldenPath : System.FilePath := "tests/upstream/h2_golden.txt"
+
+def goldenCase (kind name : String) (run : IO Bool) : Case :=
+  { upstream := s!"h2 4.4.1 {kind} (tests/upstream/h2_golden.py)", name := s!"h2 golden {kind}: {name}", run }
+
+def frameGolden (name wire : String) : Case := goldenCase "frame" name do
+  let b := unhex wire
+  match H2.parseFrame H2.defaultMaxFrameSize b with
+  | .done f rest => allOk [eqv "rest" rest.size 0, eqv "printed" (hexOf (H2.printFrame f)) wire]
+  | .more => IO.println "      incomplete"; pure false
+  | .fail e => IO.println s!"      {e.message}"; pure false
+
+/-- Refused when parsed, or (a zero WINDOW_UPDATE increment, which RFC 9113
+6.9 makes a protocol error rather than a malformed frame) by the connection
+it arrives on, after the server's SETTINGS. -/
+def badFrameGolden (name wire cls : String) : Case := goldenCase "frame" s!"{name} refused ({cls})" do
+  match H2.parseFrame H2.defaultMaxFrameSize (unhex wire) with
+  | .fail _ => pure true
+  | _ =>
+    let c := (H2.Conn.new).receive (H2.printFrame (.settings false []) ++ unhex wire)
+    if c.error.isSome then pure true else IO.println "      accepted"; pure false
+
+/-- The blocks of one hpack case, decoded in sequence with one decoder and,
+without Huffman, encoded in sequence with one encoder. -/
+def hpackGolden (name : String) (size : Nat) (huffman : Bool) (blocks : List (String × String)) : Case :=
+  goldenCase "hpack" name do
+    let mut d : Hpack.Decoder := {}
+    let mut e : Hpack.Encoder := if size == 4096 then {} else ({} : Hpack.Encoder).setMaxSize size
+    let mut ok := true
+    for (block, fields) in blocks do
+      match d.decode (unhex block) with
+      | .error err => IO.println s!"      {err.message}"; ok := false
+      | .ok (fs, d') =>
+        d := d'
+        ok := (← eqv "fields" (fieldsLine fs) fields) && ok
+        let (ours, e') := e.encode (parseFields fields)
+        e := e'
+        unless huffman do ok := (← eqv "block" (hexOf ours) block) && ok
+    pure ok
+
+def badHpackGolden (name maxList block cls : String) : Case := goldenCase "hpack" s!"{name} refused ({cls})" do
+  let d : Hpack.Decoder := { maxHeaderListSize := maxList.toNat! }
+  match d.decode (unhex block) with
+  | .error _ => pure true
+  | .ok _ => IO.println "      accepted"; pure false
+
+def huffGolden (input encoded : String) : Case := goldenCase "huffman" s!"{input.take 24}" do
+  allOk [eqv "encoded" (hexOf (Huffman.encode (unhex input))) encoded,
+    eqv "decoded" ((Huffman.decode (unhex encoded)).map hexOf) (some input)]
+
+def badHuffGolden (encoded outcome : String) : Case := goldenCase "huffman" s!"{encoded} {outcome}" do
+  eqv "decoded" (Huffman.decode (unhex encoded)).isSome (outcome == "accepted")
+
+/-- The cases of the fixture file, an hpack case's lines grouped in order. -/
+def h2GoldenCases : IO (List Case) := do
+  let lines := (← IO.FS.readFile goldenPath).splitOn "\n" |>.filter (!·.isEmpty)
+  let mut out : Array Case := #[]
+  let mut hp : Option (String × Nat × Bool × Array (String × String)) := none
+  for l in lines do
+    let fs := l.splitOn "|"
+    if let some (n, sz, hf, bs) := hp then
+      unless fs[0]! == "hpack" && fs[1]! == n do
+        out := out.push (hpackGolden n sz hf bs.toList); hp := none
+    match fs with
+    | ["frame", n, w] => out := out.push (frameGolden n w)
+    | ["badframe", n, w, c] => out := out.push (badFrameGolden n w c)
+    | ["hpack", n, sz, hf, b, f] =>
+      hp := match hp with
+        | some (n', sz', hf', bs) => some (n', sz', hf', bs.push (b, f))
+        | none => some (n, sz.toNat!, hf == "1", #[(b, f)])
+    | ["badhpack", n, m, b, c] => out := out.push (badHpackGolden n m b c)
+    | ["huff", i, e] => out := out.push (huffGolden i e)
+    | ["badhuff", e, o] => out := out.push (badHuffGolden e o)
+    | _ => throw (IO.userError s!"bad fixture line: {l}")
+  if let some (n, sz, hf, bs) := hp then out := out.push (hpackGolden n sz hf bs.toList)
+  return out.toList
+
+/-! ## HTTP/2 connection (httpcore `tests/_sync/test_http2.py`, h2 `tests/`)
+
+The sans-I/O connection fed the frames each upstream test sends. A request
+that fails is an outcome `error …`; a connection error is `Conn.error`. -/
+
+def hf (n v : String) : Hpack.HeaderField := ⟨n.toUTF8, v.toUTF8, false⟩
+def getFields : List Hpack.HeaderField :=
+  [hf ":method" "GET", hf ":authority" "example.com", hf ":scheme" "https", hf ":path" "/"]
+/-- A block as a fresh `hpack.Encoder()` encodes it. -/
+def block (fs : List (String × String)) : ByteArray := (({} : Hpack.Encoder).encode (fs.map fun (n, v) => hf n v)).1
+def okHead : List (String × String) := [(":status", "200"), ("content-type", "plain/text")]
+def respHeaders (sid : Nat) (fs : List (String × String) := okHead) (endStream := false) : H2.Frame :=
+  .headers sid (block fs) endStream true none none
+def dataFrame (sid : Nat) (d : String) (endStream := true) : H2.Frame := .data sid d.toUTF8 endStream none
+def frames (fs : List H2.Frame) : ByteArray := fs.foldl (fun b f => b ++ H2.printFrame f) .empty
+def srvSettings (ps : List (Nat × Nat) := []) : H2.Frame := .settings false ps
+
+def start (c : H2.Conn) (body : ByteArray := .empty) : IO (H2.Conn × Nat) :=
+  match c.startRequest getFields body with
+  | .ok r => pure r
+  | .error e => throw (IO.userError e.message)
+
+def outcomeLine (c : H2.Conn) (sid : Nat) : String := match c.outcome sid with
+  | none => "pending"
+  | some (.error m) => s!"error {m}"
+  | some (.ok (st, _, b)) => s!"{st} {str b}"
+
+def connError (c : H2.Conn) : String := match c.error with
+  | some e => s!"{e.code.name}: {e.message}"
+  | none => "none"
+
+def errCode (c : H2.Conn) : String := match c.error with
+  | some e => e.code.name
+  | none => "none"
+
+/-- The frames the client sent, after the preface. -/
+def sent (c : H2.Conn) : List H2.Frame := Id.run do
+  let mut b := c.out.extract H2.preface.size c.out.size
+  let mut out := #[]
+  for _ in [0:b.size / 9 + 1] do
+    match H2.parseFrame H2.maxFrameSizeLimit b with
+    | .done f rest => out := out.push f; b := rest
+    | _ => break
+  return out.toList
+
+def sentData (c : H2.Conn) : Nat × Bool := (sent c).foldl (fun (n, e) f => match f with
+  | .data _ d endStream _ => (n + d.size, e || endStream)
+  | _ => (n, e)) (0, false)
+
+/-- A response on stream 1 whose head has an invalid field, after `:status`. -/
+def badResponse (field : String × String) : IO String := do
+  let (c, sid) ← start H2.Conn.new
+  let c := c.receive (frames [srvSettings, respHeaders sid ((":status", "200") :: [field]) true])
+  pure (outcomeLine c sid)
+
+def isError (s : String) : Bool := s.startsWith "error"
+
+def h2Up (t : String) : String := s!"h2 tests/{t}"
+def coreUp (t : String) : String := s!"httpcore tests/_sync/test_http2.py::{t}"
+
+def h2ConnCases : List Case := [
+  ⟨coreUp "test_http2_connection", "a response", do
+    let (c, sid) ← start H2.Conn.new
+    let c := c.receive (frames [srvSettings, respHeaders sid, dataFrame sid "Hello, world!"])
+    allOk [eqv "outcome" (outcomeLine c sid) "200 Hello, world!", eqv "error" (connError c) "none",
+      eqv "available" (c.release sid).canStart true]⟩,
+  ⟨coreUp "test_http2_connection_post_request", "a request body", do
+    let (c, sid) ← start H2.Conn.new "{\"a\": 1}".toUTF8
+    let c := c.receive (frames [srvSettings, respHeaders sid, dataFrame sid "Hello, world!"])
+    allOk [eqv "sent" (sentData c) (8, true), eqv "outcome" (outcomeLine c sid) "200 Hello, world!"]⟩,
+  ⟨coreUp "test_http2_connection_with_remote_protocol_error", "not HTTP/2", do
+    let (c, sid) ← start H2.Conn.new
+    let c := c.receive "Wait, this isn't valid HTTP!".toUTF8
+    allOk [eqv "error" (errCode c) "FRAME_SIZE_ERROR", eqv "outcome" (isError (outcomeLine c sid)) true]⟩,
+  ⟨coreUp "test_http2_connection_with_rst_stream", "reset stream, connection reusable", do
+    let (c, s1) ← start H2.Conn.new
+    let c := c.receive (frames [srvSettings, respHeaders s1, .rstStream s1 8])
+    let first := outcomeLine c s1
+    let (c, s3) ← start (c.release s1)
+    let c := c.receive (frames [respHeaders s3, dataFrame s3 "Hello, world!"])
+    allOk [eqv "first" first "error Stream 1 was reset by the server: CANCEL",
+      eqv "second" (outcomeLine c s3) "200 Hello, world!"]⟩,
+  ⟨coreUp "test_http2_connection_with_goaway", "GOAWAY, connection not reusable", do
+    let (c, s1) ← start H2.Conn.new
+    let c := c.receive (frames [srvSettings, respHeaders s1, .goaway 0 0 .empty])
+    allOk [eqv "first" (outcomeLine c s1) "error Server sent GOAWAY (NO_ERROR); stream 1 was not processed",
+      eqv "available" c.canStart false,
+      eqv "second" (match c.startRequest getFields .empty with | .ok _ => "ok" | .error e => e.code.name) "REFUSED_STREAM"]⟩,
+  ⟨coreUp "test_http2_connection_with_flow_control", "a body larger than the initial window", do
+    let (c, sid) ← start H2.Conn.new (ByteArray.mk (Array.replicate 100000 120))
+    let before := sentData c
+    let ups := (List.range 4).flatMap fun _ => [H2.Frame.windowUpdate 0 10000, .windowUpdate sid 10000]
+    let c := c.receive (frames ([srvSettings] ++ ups ++ [respHeaders sid, dataFrame sid "100,000 bytes received"]))
+    allOk [eqv "before" before (65535, false), eqv "sent" (sentData c) (100000, true),
+      eqv "outcome" (outcomeLine c sid) "200 100,000 bytes received"]⟩,
+  ⟨coreUp "test_http2_remote_max_streams_update", "MAX_CONCURRENT_STREAMS updates", do
+    let (c, sid) ← start H2.Conn.new
+    let c := c.receive (frames [srvSettings [(H2.settingsMaxConcurrentStreams, 1000)], respHeaders sid,
+      dataFrame sid "Hello, world!" false])
+    let first := (c.peer.maxConcurrentStreams, min c.peer.maxConcurrentStreams c.limits.maxConcurrentStreams)
+    let c := c.receive (frames [srvSettings [(H2.settingsMaxConcurrentStreams, 50)], dataFrame sid "Hello, world...again!"])
+    allOk [eqv "first" first (1000, 100), eqv "second" c.peer.maxConcurrentStreams 50,
+      eqv "outcome" (outcomeLine c sid) "200 Hello, world!Hello, world...again!"]⟩,
+  ⟨h2Up "test_invalid_frame_sequences.py::TestInvalidFrameSequences::test_reject_invalid_settings_values", "invalid SETTINGS values", do
+    let codes := [(2, 5), (4, 2 ^ 31), (5, 5), (5, 2 ^ 24)].map fun (k, v) =>
+      errCode ((H2.Conn.new).receive (frames [srvSettings [(k, v)]]))
+    eqv "codes" codes ["PROTOCOL_ERROR", "FLOW_CONTROL_ERROR", "PROTOCOL_ERROR", "PROTOCOL_ERROR"]⟩,
+  ⟨h2Up "test_invalid_frame_sequences.py::TestInvalidFrameSequences::test_reject_server_enable_push_updates", "server ENABLE_PUSH 1", do
+    eqv "code" (errCode ((H2.Conn.new).receive (frames [srvSettings [(H2.settingsEnablePush, 1)]]))) "PROTOCOL_ERROR"⟩,
+  ⟨h2Up "test_invalid_frame_sequences.py::TestInvalidFrameSequences::test_invalid_frame_headers_are_protocol_errors", "HEADERS on stream 0", do
+    let (c, _) ← start H2.Conn.new
+    let w := H2.printFrame (respHeaders 1)
+    let w := ByteArray.mk ((w.extract 0 9).data.map fun b => if b == 1 then 0 else b) ++ w.extract 9 w.size
+    eqv "code" (errCode (c.receive (frames [srvSettings] ++ w))) "PROTOCOL_ERROR"⟩,
+  ⟨h2Up "test_invalid_frame_sequences.py::TestInvalidFrameSequences::test_data_before_headers", "DATA before HEADERS", do
+    let (c, sid) ← start H2.Conn.new
+    eqv "error" (connError (c.receive (frames [srvSettings, dataFrame sid "hello" false])))
+      "PROTOCOL_ERROR: DATA before HEADERS"⟩,
+  ⟨h2Up "test_invalid_frame_sequences.py::TestInvalidFrameSequences::test_prevent_continuation_dos", "CONTINUATION flood", do
+    let (c, sid) ← start H2.Conn.new
+    let conts := (List.range 70).map fun _ => H2.Frame.continuation sid (ByteArray.mk #[0x40, 1, 120, 1, 120]) false
+    let c := c.receive (frames ([srvSettings, .headers sid (block [(":status", "200")]) false false none none] ++ conts))
+    eqv "error" (connError c) "PROTOCOL_ERROR: Too many continuation frames received."⟩,
+  ⟨h2Up "test_informational_responses.py::TestReceivingInformationalResponses::test_single_informational_response", "100 then 200", do
+    let (c, sid) ← start H2.Conn.new
+    let c := c.receive (frames [srvSettings, respHeaders sid [(":status", "100")], respHeaders sid, dataFrame sid "ok"])
+    eqv "outcome" (outcomeLine c sid) "200 ok"⟩,
+  ⟨h2Up "test_informational_responses.py::TestReceivingInformationalResponses::test_receiving_multiple_informational_responses", "several 1xx", do
+    let (c, sid) ← start H2.Conn.new
+    let c := c.receive (frames [srvSettings, respHeaders sid [(":status", "100")], respHeaders sid [(":status", "103")],
+      respHeaders sid, dataFrame sid "ok"])
+    eqv "outcome" (outcomeLine c sid) "200 ok"⟩,
+  ⟨h2Up "test_informational_responses.py::TestReceivingInformationalResponses::test_receive_provisional_response_with_end_stream", "1xx with END_STREAM", do
+    let (c, _) ← start H2.Conn.new
+    eqv "code" (errCode (c.receive (frames [srvSettings, respHeaders 1 [(":status", "100")] true]))) "PROTOCOL_ERROR"⟩,
+  ⟨h2Up "test_invalid_headers.py::TestInvalidFrameSequences::test_headers_event", "invalid response fields", do
+    let bad := [("Uppercase", "name"), ("connection", "close"), ("proxy-connection", "close"),
+      ("keep-alive", "close"), ("transfer-encoding", "gzip"), ("upgrade", "super-protocol/1.1"), ("te", "chunked"),
+      (" name", "name with leading space"), ("name ", "name with trailing space"),
+      ("name", " value with leading space"), ("name", "value with trailing space "),
+      ("illegal:characters", "value"), ("illegal-\r-characters", "value"), ("illegal-\n-characters", "value"),
+      ("illegal-\x00-characters", "value"), ("illegal-\x01-characters", "value"),
+      ("illegal-characters", "some \r value"), ("illegal-characters", "some \n value"),
+      ("illegal-characters", "some \x00 value"), (":status", "200"), ("", "empty name")]
+    let outs ← bad.mapM badResponse
+    let wrong := (bad.zip outs).filter fun (_, o) => !isError o
+    eqv "accepted" (wrong.map (·.1.1)) []⟩,
+  ⟨h2Up "test_invalid_headers.py::TestInvalidFrameSequences::test_headers_event", "late pseudo-header", do
+    let (c, sid) ← start H2.Conn.new
+    let c := c.receive (frames [srvSettings, respHeaders sid [(":status", "200"), ("x", "1"), (":late", "pseudo-header")] true])
+    eqv "outcome" (isError (outcomeLine c sid)) true⟩,
+  ⟨h2Up "test_invalid_headers.py::TestInvalidFrameSequences::test_te_trailers_is_valid", "te: trailers", do
+    let (c, sid) ← start H2.Conn.new
+    let c := c.receive (frames [srvSettings, respHeaders sid [(":status", "200"), ("te", "trailers")] true])
+    eqv "outcome" (outcomeLine c sid) "200 "⟩,
+  ⟨h2Up "test_invalid_headers.py::TestInvalidFrameSequences::test_pseudo_headers_rejected_in_trailer", "pseudo-header in trailers", do
+    let (c, sid) ← start H2.Conn.new
+    let c := c.receive (frames [srvSettings, respHeaders sid, dataFrame sid "x" false,
+      respHeaders sid [(":status", "200")] true])
+    eqv "outcome" (isError (outcomeLine c sid)) true⟩,
+  ⟨h2Up "test_invalid_headers.py::TestOversizedHeaders::test_hpack_bomb_response", "HPACK bomb", do
+    let (c, sid) ← start H2.Conn.new
+    let big := Hpack.encodeReps [.indexed 8, .literal .incremental (.lit "x-bomb".toUTF8) (ByteArray.mk (Array.replicate 4000 97))]
+    let blk := (List.range 20).foldl (fun b _ => b ++ Hpack.encodeReps [.indexed 62]) big
+    let c := c.receive (frames [srvSettings, .headers sid blk true true none none])
+    eqv "code" (errCode c) "COMPRESSION_ERROR"⟩,
+  ⟨h2Up "test_flow_control_window.py::TestFlowControl::test_reject_increasing_connection_window_too_far", "connection window overflow", do
+    eqv "code" (errCode ((H2.Conn.new).receive (frames [srvSettings, .windowUpdate 0 (2 ^ 31 - 65535)]))) "FLOW_CONTROL_ERROR"⟩,
+  ⟨h2Up "test_flow_control_window.py::TestFlowControl::test_reject_increasing_stream_window_too_far", "stream window overflow resets the stream", do
+    let (c, sid) ← start H2.Conn.new
+    let c := c.receive (frames [srvSettings, .windowUpdate sid (2 ^ 31 - 65535)])
+    let rst := (sent c).any fun f => match f with | .rstStream 1 3 => true | _ => false
+    allOk [eqv "error" (connError c) "none", eqv "outcome" (isError (outcomeLine c sid)) true, eqv "rst" rst true]⟩,
+  ⟨h2Up "test_flow_control_window.py::TestFlowControl::test_reject_overlarge_stream_window_settings", "SETTINGS overflows a stream window", do
+    let (c, sid) ← start H2.Conn.new
+    let c := c.receive (frames [srvSettings, .windowUpdate sid (2 ^ 31 - 1 - 65535), srvSettings [(H2.settingsInitialWindowSize, 65536)]])
+    eqv "code" (errCode c) "FLOW_CONTROL_ERROR"⟩,
+  ⟨h2Up "test_flow_control_window.py::TestFlowControl::test_reject_overlarge_conn_window_settings", "SETTINGS leaves the connection window", do
+    let c := (H2.Conn.new).receive (frames [srvSettings, .windowUpdate 0 (2 ^ 31 - 1 - 65535), srvSettings [(H2.settingsInitialWindowSize, 65536)]])
+    eqv "error" (connError c) "none"⟩,
+  ⟨h2Up "test_basic_logic.py::TestBasicClient::test_receiving_ping_frame", "PING is acknowledged", do
+    let c := (H2.Conn.new).receive (frames [srvSettings, .ping false "12345678".toUTF8])
+    eqv "ack" ((sent c).any fun f => match f with | .ping true d => d == "12345678".toUTF8 | _ => false) true⟩,
+  ⟨h2Up "test_basic_logic.py::TestBasicClient::test_acknowledging_settings", "SETTINGS is acknowledged", do
+    let c := (H2.Conn.new).receive (frames [srvSettings [(H2.settingsMaxConcurrentStreams, 10)]])
+    eqv "ack" ((sent c).any fun f => match f with | .settings true [] => true | _ => false) true⟩,
+  ⟨h2Up "test_basic_logic.py::TestBasicClient::test_cannot_receive_pushed_stream_when_enable_push_is_0", "PUSH_PROMISE refused", do
+    let (c, sid) ← start H2.Conn.new
+    eqv "code" (errCode (c.receive (frames [srvSettings, .pushPromise sid 2 (block okHead) true none]))) "PROTOCOL_ERROR"⟩
+]
+
 def cases : List Case :=
-  urlCases ++ headerCases ++ cookieCases ++ modelCases ++ clientCases ++ redirectCases ++ authCases ++ asgiCases ++ h1Cases
+  urlCases ++ headerCases ++ cookieCases ++ modelCases ++ clientCases ++ redirectCases ++ authCases ++ asgiCases ++ h1Cases ++ h2ConnCases
 
 def main : IO UInt32 := do
+  let cases := cases ++ (← h2GoldenCases)
   let mut failures := 0
   for c in cases do
     let ok ← try c.run catch e => do IO.println s!"      {e}"; pure false
