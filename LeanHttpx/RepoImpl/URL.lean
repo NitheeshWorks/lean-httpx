@@ -226,6 +226,9 @@ protected def toString (u : URL) : String := String.ofList (printRaw u.ref.toRaw
 
 instance : ToString URL := ⟨URL.toString⟩
 
+/-- The empty relative URL. -/
+instance : Inhabited URL := ⟨⟨{}, by decide⟩⟩
+
 instance : Repr URL := ⟨fun u _ => s!"URL({Text.pyRepr u.toString})"⟩
 
 end URL
