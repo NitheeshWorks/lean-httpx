@@ -1,4 +1,5 @@
 import LeanHttpx.RepoImpl.URL
+import LeanHttpx.RepoImpl.Lists
 
 /-!
 # Splitting a printed URL gives back its parts
@@ -16,52 +17,6 @@ namespace LeanHttpx
 open Chars URLParse
 
 namespace URLParse
-
-/-! ## Scanning up to a delimiter -/
-
-/-- `r` is empty or starts with a character `p` rejects. -/
-def StopsAt (p : Char → Bool) (r : List Char) : Prop := ∀ c, r.head? = some c → p c = false
-
-theorem takeWhile_append_stop {p : Char → Bool} {l r : List Char} (hl : ∀ c ∈ l, p c = true)
-    (hr : StopsAt p r) : (l ++ r).takeWhile p = l := by
-  rw [List.takeWhile_append_of_pos hl]
-  cases r with
-  | nil => simp
-  | cons c r => simp [hr c rfl]
-
-theorem dropWhile_append_stop {p : Char → Bool} {l r : List Char} (hl : ∀ c ∈ l, p c = true)
-    (hr : StopsAt p r) : (l ++ r).dropWhile p = r := by
-  induction l with
-  | nil =>
-    cases r with
-    | nil => rfl
-    | cons c r => simp [hr c rfl]
-  | cons x l ih =>
-    simp only [List.cons_append, List.dropWhile_cons, hl x (by simp), ite_true]
-    exact ih (fun c hc => hl c (by simp [hc]))
-
-theorem all_of_dropWhile_eq_nil {p : Char → Bool} : ∀ {l : List Char}, l.dropWhile p = [] →
-    ∀ x ∈ l, p x = true
-  | [], _, x, hx => by cases hx
-  | c :: l, h, x, hx => by
-    by_cases hc : p c = true
-    · simp only [List.dropWhile_cons, hc, ite_true] at h
-      rcases List.mem_cons.mp hx with rfl | hx
-      · exact hc
-      · exact all_of_dropWhile_eq_nil h x hx
-    · simp [List.dropWhile_cons, hc] at h
-
-theorem stopsAt_nil (p : Char → Bool) : StopsAt p [] := by intro c h; cases h
-
-theorem stopsAt_cons {p : Char → Bool} {c : Char} {r : List Char} (h : p c = false) :
-    StopsAt p (c :: r) := by
-  intro d hd; simp at hd; subst hd; exact h
-
-theorem stopsAt_append {p : Char → Bool} {l r : List Char} (hl : StopsAt p l)
-    (hr : l = [] → StopsAt p r) : StopsAt p (l ++ r) := by
-  cases l with
-  | nil => exact hr rfl
-  | cons c l => intro d hd; simp at hd; subst hd; exact hl _ rfl
 
 /-! ## The top-level split -/
 
@@ -105,10 +60,6 @@ theorem schemeOf_stop {l : List Char} (h : ∀ c, l.head? = some c → c ≠ ':'
   | cons c l =>
     have := h c rfl
     simp [schemeOf, this.1, this.2]
-
-theorem dropWhile_append_of_ne_nil {p : Char → Bool} {l r : List Char} (h : l.dropWhile p ≠ []) :
-    (l ++ r).dropWhile p = l.dropWhile p ++ r := by
-  rw [List.dropWhile_append]; simp [h]
 
 theorem afterColon?_append {l r : List Char} (h : l ≠ []) : afterColon? (l ++ r) = (afterColon? l).map (· ++ r) := by
   cases l with
