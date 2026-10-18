@@ -495,8 +495,8 @@ id = "h2.transport"
 upstream = "httpx tests/client/test_client.py (Client(http2=True)); httpcore/_sync/http2.py"
 title = "Client.new (http1 := false) (http2 := true): HTTP/2 with prior knowledge over TCP, errors as httpx classes, body memory and time bounded"
 status = "deviation"
-realises = ["LeanHttpx.HTTP2Transport.new", "LeanHttpx.httpTransport", "LeanHttpx.Client.new", "LeanHttpx.H2Link.readLoop", "LeanHttpx.H2Link.await", "LeanHttpx.refusedUnprocessed"]
-test = ["tests/NativeH2.lean::/ok", "tests/NativeH2.lean::bench", "tests/NativeH2.lean::stalled multiplexed stream"]
+realises = ["LeanHttpx.HTTP2Transport.new", "LeanHttpx.httpTransport", "LeanHttpx.Client.new", "LeanHttpx.H2Link.readLoop", "LeanHttpx.H2Link.await", "LeanHttpx.H2Link.stopReader", "LeanHttpx.recvOrStop", "LeanHttpx.refusedUnprocessed"]
+test = ["tests/NativeH2.lean::/ok", "tests/NativeH2.lean::bench", "tests/NativeH2.lean::stalled multiplexed stream", "tests/NativeH2.lean::exit after a timed-out request"]
 
 [[requirement]]
 id = "h2.request-fields"

@@ -372,7 +372,47 @@ def bench (port : Nat) : IO Bool := do
   if !good then IO.println "  FAIL"
   return good
 
+/-- The child of `exitCheck`: one request that times out, then return from
+`main` (no `IO.Process.exit`), closing the client or not. -/
+def child (port : Nat) (close : Bool) : IO UInt32 := do
+  let c ← Client.new (http1 := false) (http2 := true)
+    (timeout := { connect := some 2.0, read := some 0.3, write := some 2.0, pool := some 2.0 })
+  let out ← try (do let _ ← c.get s!"http://127.0.0.1:{port}/silent"; pure "no timeout") catch e => pure (toString e)
+  if close then c.close
+  IO.println out
+  (← IO.getStdout).flush
+  return if out == "ReadTimeout: timed out" then 0 else 1
+
+/-- A program whose request timed out exits once `main` returns, with and
+without `close`, within 2 s, under `threads` Lean threads. -/
+def exitCheck (port : Nat) (threads : Nat) : IO Bool := do
+  let self ← IO.appPath
+  let mut good := true
+  for close in [true, false] do
+    let t0 ← IO.monoMsNow
+    let mode := if close then "close" else "noclose"
+    let p ← IO.Process.spawn {
+      cmd := self.toString
+      args := #["child", toString port, mode]
+      env := #[("LEAN_NUM_THREADS", some (toString threads))]
+      stdout := .piped }
+    let mut code : Option UInt32 := none
+    for _ in [0:200] do
+      if let some c ← p.tryWait then code := some c; break
+      IO.sleep 10
+    let dt := (← IO.monoMsNow) - t0
+    if code.isNone then p.kill; discard <| p.wait
+    let out := (← p.stdout.readToEnd).trimAscii.toString
+    let ok := code == some 0 && dt ≤ 2000
+    good := good && ok
+    let tag := if ok then "ok  " else "FAIL"
+    let how := if close then "with" else "without"
+    let ended := match code with | some c => "exited " ++ toString c | none => "still running, killed"
+    IO.println s!"{tag}  exit after a timed-out request ({how} close, LEAN_NUM_THREADS={threads}): {ended} after {dt} ms ({out})"
+  return good
+
 def main (args : List String) : IO UInt32 := do
+  if let ["child", port, mode] := args then return ← child port.toNat! (mode == "close")
   let port ← startServer
   if args.head? == some "serve" then
     IO.println s!"{port}"; (← IO.getStdout).flush
@@ -380,7 +420,10 @@ def main (args : List String) : IO UInt32 := do
     IO.Process.exit 0
   let good ← match args with
     | ["bench"] => bench port
-    | ["concurrency"] => concurrency port
+    | ["concurrency"] => do
+      let a ← concurrency port
+      let b ← exitCheck port ((← IO.getEnv "LEAN_NUM_THREADS").bind String.toNat? |>.getD 4)
+      pure (a && b)
     | _ => runCases port
   IO.println (if good then "all clean" else "FAILED")
   (← IO.getStdout).flush

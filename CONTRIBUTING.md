@@ -35,6 +35,17 @@ one client and a stalled stream beside a busy one, under one and two Lean
 threads (`scripts/bench.sh`). The read timeout is per stream, counted from
 that stream's last progress; a stream that times out is reset.
 
+No thread may outlive the requests: the runtime waits for every running
+task when `main` returns, and a reader still waiting for bytes then waits
+for a continuation the stopping runtime never runs. So the reader selects
+between the socket and a `CancellationToken` (the socket's selector reads
+only when chosen, so stopping loses no bytes); it ends by itself when no
+stream is open; when the last waiting stream times out, its task cancels
+the reader and waits for it to end before raising `ReadTimeout`; `close`
+does the same for every connection. `native2 concurrency` runs a child
+process whose request times out and which returns from `main`, with and
+without `close`: it must exit within 2 s.
+
 Module map: `RepoImpl/URL.lean` (parser and printer), `URLOps.lean` (properties,
 `copyWith`, `join`), `Headers.lean` (`Headers`, `QueryParams`), `Cookies.lean`
 (the `http.cookiejar` default policy), `Models.lean` (`Request.new`, `Response.new`

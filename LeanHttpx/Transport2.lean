@@ -2,6 +2,7 @@ import LeanHttpx.Transport
 import LeanHttpx.RepoImpl.H2Conn
 import LeanHttpx.RepoImpl.H2Request
 import Std.Sync.Mutex
+import Std.Sync.CancellationToken
 
 /-!
 # `HTTP2Transport`: HTTP/2 over TCP with prior knowledge (the effect module)
@@ -18,8 +19,11 @@ no lock is ever held across a socket operation or a wait:
 * one reader per connection, on its own thread, does every read and feeds
   the bytes to the connection state; it runs while the connection has a
   stream open, as httpcore reads only for a waiting request, so an idle
-  connection holds no thread (and a program need not close its client to
-  exit);
+  connection holds no thread. When the last waiting stream times out, the
+  stream is reset and its task stops the reader and waits for it to end
+  before it raises `ReadTimeout`; `close` stops every reader the same way.
+  So no thread outlives the requests, and a program exits when `main`
+  returns, closed client or not;
 * the state's lock is held only to update it, never while waiting;
 * a task waiting for its response, or for a free stream, leaves a promise
   and waits on it (a task the runtime knows is waiting, so it does not hold
@@ -48,8 +52,11 @@ structure Shared where
   failure : Option String := none
   /-- The connection has ended or failed: no more reading. -/
   stopped : Bool := false
-  /-- A reader is running. -/
-  reading : Bool := false
+  /-- The running reader, if any: its number, the token that stops it, and
+  its task. At most one reader runs at a time. -/
+  reader : Option (Nat × Std.CancellationToken × Task (Except IO.Error Unit)) := none
+  /-- Readers started so far. -/
+  readers : Nat := 0
 
 /-- A shared HTTP/2 connection. -/
 structure H2Link where
@@ -67,13 +74,17 @@ def H2Link.wake (l : H2Link) : IO Unit := do
     pure s.waiters
   for p in ws do p.resolve ()
 
-/-- Wait for a promise for at most `ms` milliseconds (`none`: no bound). -/
+/-- Wait for a promise for at most `ms` milliseconds (`none`: no bound).
+The promise is then resolved here, so the side of the race that waits on
+it ends even when the timer won (a task left waiting would keep the
+program from exiting). -/
 def waitWake (p : IO.Promise Unit) (ms : Option Nat) : IO Unit := do
   match ms with
   | none => discard <| IO.wait p.result?
   | some ms =>
     discard <| (Async.race (do discard <| await p.result?; pure ())
       (sleep (Std.Time.Millisecond.Offset.ofNat ms))).block
+    p.resolve ()
 
 /-- Write what the connection has to send: this task's output and any that
 arrives while it writes. If another task is writing, it sends ours. -/
@@ -95,47 +106,71 @@ def H2Link.flush (l : H2Link) (t : Option Float) : IO Unit := do
       l.wake
       throw e
 
-/-- How long the reader waits for bytes before it looks again whether the
-connection still has a stream open. -/
-def readerTick : Float := 0.25
+/-- One read, or `none` once `stop` is cancelled. The two are selected
+between, and the read takes bytes only when it is chosen, so stopping never
+loses any. -/
+def recvOrStop (sock : TCP.Socket.Client) (stop : Std.CancellationToken) : IO (Option (Option ByteArray)) := do
+  try
+    let r ← (Selectable.one #[.case (sock.recvSelector readSize) (fun b => pure (some b)),
+      .case stop.selector (fun _ => pure none)]).block
+    pure (r.map fun b => match b with | some b => if b.isEmpty then none else some b | none => none)
+  catch e => raise (.readError (toString e))
 
-/-- The reader: read, feed the state, send what it answers, wake the
-waiting tasks; until the connection has no stream open, ends or fails. -/
-def H2Link.readLoop (l : H2Link) : IO Unit := do
+/-- The reader number `gen`: read, feed the state, send what it answers,
+wake the waiting tasks; until the connection has no stream open, ends or
+fails, or `stop` is cancelled. -/
+def H2Link.readLoop (l : H2Link) (gen : Nat) (stop : Std.CancellationToken) : IO Unit := do
   for _ in [0:unbounded] do
     let idle ← l.shared.atomically do
       let s ← get
       let idle := s.stopped || (s.conn.active == 0 && s.conn.block.isNone)
-      if idle then set { s with reading := false }
+      if idle && (s.reader.map (·.1)) == some gen then set { s with reader := none }
       pure idle
     if idle then return
-    let data ← try pure (Except.ok (some (← recvSome l.sock (some readerTick))))
-      catch e =>
-        let m := toString e
-        pure (if m.startsWith "ReadTimeout: " then .ok none else .error m)
+    let data ← try pure (Except.ok (← recvOrStop l.sock stop)) catch e => pure (.error (toString e))
+    if let .ok none := data then return
     let stop ← l.shared.atomically do
       let s ← get
       let s := match data with
-        | .ok none => s
         | .ok (some (some b)) => { s with conn := s.conn.receive b }
-        | .ok (some none) => { s with conn := if s.conn.error.isSome then s.conn else
+        | .ok _ => { s with conn := if s.conn.error.isSome then s.conn else
             { s.conn with error := some ⟨.noError, "Server disconnected without sending a response."⟩ } }
         | .error m => { s with failure := s.failure <|> some m }
       let stop := s.conn.error.isSome || s.failure.isSome
-      set { s with stopped := stop, reading := !stop }
+      set { s with stopped := s.stopped || stop }
       pure stop
     try l.flush none catch _ => pure ()
     l.wake
-    if stop then return
+    if stop then
+      l.shared.atomically (modify fun s =>
+        if (s.reader.map (·.1)) == some gen then { s with reader := none } else s)
+      return
 
 /-- Start the reader unless one is running. -/
 def H2Link.ensureReader (l : H2Link) : IO Unit := do
-  let start ← l.shared.atomically do
+  let stop ← Std.CancellationToken.new
+  l.shared.atomically do
     let s ← get
-    if s.reading || s.stopped then pure false else set { s with reading := true }; pure true
-  if start then
-    let _ ← IO.asTask (prio := .dedicated) (try l.readLoop catch _ =>
-      l.shared.atomically (modify fun s => { s with reading := false }))
+    if s.reader.isSome || s.stopped then return
+    let gen := s.readers
+    let task ← IO.asTask (prio := .dedicated) (l.readLoop gen stop)
+    set { s with reader := some (gen, stop, task), readers := gen + 1 }
+
+/-- Stop the reader and wait for it to end: when no stream is open (`force`:
+in any case). If a request started meanwhile, a new reader serves it. -/
+def H2Link.stopReader (l : H2Link) (force : Bool := false) : IO Unit := do
+  let r ← l.shared.atomically do
+    let s ← get
+    pure (if force || s.conn.active == 0 then s.reader else none)
+  let some (gen, stop, task) := r | return
+  stop.cancel
+  discard <| IO.wait task
+  let again ← l.shared.atomically do
+    let s ← get
+    let s := if (s.reader.map (·.1)) == some gen then { s with reader := none } else s
+    set s
+    pure (s.reader.isNone && !s.stopped && s.conn.active > 0)
+  if again then l.ensureReader
 
 /-- Open a connection to an address, send the preface and start its reader. -/
 def H2Link.connect (addr : SocketAddress) (timeout : Timeout) : IO H2Link := do
@@ -185,6 +220,8 @@ def H2Link.await (l : H2Link) (sid : Nat) (t : Option Float) :
           l.shared.atomically (modify fun s =>
             { s with conn := (s.conn.send (.rstStream sid ErrorCode.cancel.toNat)).release sid })
           try l.flush none catch _ => pure ()
+          -- the last open stream: no reader is needed, so it ends before we return
+          l.stopReader
           l.wake
           raise (.readTimeout "timed out")
         waitWake p (some (deadline - now))
@@ -309,6 +346,10 @@ def HTTP2Transport.new : IO Transport := do
       for (_, _, pend) in links do
         if ← IO.hasFinished pend.result? then
           if let some (.ok l) := pend.result?.get then
+            -- the reader sees `stopped` within a tick and ends
+            l.shared.atomically (modify fun s =>
+              { s with stopped := true, failure := s.failure <|> some "ReadError: the client was closed" })
+            l.stopReader (force := true)
             try (l.sock.shutdown).block catch _ => pure ()
             l.wake }
 
