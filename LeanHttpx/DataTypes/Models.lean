@@ -47,7 +47,11 @@ instance : Inhabited Request where
 structure Response where
   statusCode : Nat
   headers : Headers := {}
+  /-- The decoded body, once read. -/
   content : ByteArray := .empty
+  /-- The raw body a transport returned, not yet read: reading decodes its
+  `Content-Encoding` into `content` (`response.read()`). -/
+  stream : Option ByteArray := none
   /-- The request that produced it, set by the client. -/
   request? : Option Request := none
   /-- The redirect and authentication responses before this one. -/
